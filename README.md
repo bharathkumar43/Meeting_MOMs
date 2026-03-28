@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Meeting MOM Generator
 
 A web application that integrates with Microsoft Teams to fetch meeting transcripts, let migration managers edit and organize them into Minutes of Meeting (MOM), generate professional Word documents, and email them directly to customers.
@@ -101,3 +102,6 @@ This means only the signed-in manager's meetings are visible, and they explicitl
 - **Only scheduled meetings** (calendar-backed) support transcript retrieval via the Graph API
 - Each manager sees **only their own meetings** - the app uses delegated (per-user) authentication
 - The Word document is generated in-memory and never stored on disk
+=======
+# Meeting_MOMs
+>>>>>>> b336e0c68dbea5825df9aff6e000446c099cc2ae
