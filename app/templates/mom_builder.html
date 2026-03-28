@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+{% block title %}MOM Builder - {{ meeting_subject }} - MOM Generator{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-10">
+        <!-- Breadcrumb -->
+        <nav aria-label="breadcrumb" class="mb-3">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
+                <li class="breadcrumb-item">Transcript</li>
+                <li class="breadcrumb-item active">MOM Builder</li>
+            </ol>
+        </nav>
+
+        <div class="d-flex align-items-center gap-2 mb-1">
+            <h3 class="fw-bold mb-0">Build Minutes of Meeting</h3>
+            {% if ai_summary or ai_discussion_points or ai_action_items or ai_decisions %}
+            <span class="badge bg-success-subtle text-success px-2 py-1">
+                <i class="bi bi-stars"></i> AI Generated
+            </span>
+            {% endif %}
+        </div>
+        <p class="text-muted mb-4">{{ meeting_subject }} &middot; {{ meeting_date }}</p>
+
+        <form method="POST" action="{{ url_for('main.send_page') }}" id="momForm">
+            <input type="hidden" name="meeting_subject" value="{{ meeting_subject }}">
+            <input type="hidden" name="meeting_date" value="{{ meeting_date }}">
+            <input type="hidden" name="meeting_time" value="{{ meeting_time }}">
+            <input type="hidden" name="attendees_json" value="{{ attendees_json }}">
+            <input type="hidden" name="transcript" value="{{ transcript }}">
+
+            <!-- Meeting Details -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-bottom py-3">
+                    <span class="fw-semibold"><i class="bi bi-info-circle"></i> Meeting Details</span>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Meeting Title</label>
+                            <input type="text" class="form-control" name="title"
+                                   value="{{ meeting_subject }}" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold">Date</label>
+                            <input type="date" class="form-control" name="date"
+                                   value="{{ meeting_date }}" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold">Duration</label>
+                            <input type="text" class="form-control" name="duration"
+                                   placeholder="e.g. 45 minutes">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Summary -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-bottom py-3">
+                    <span class="fw-semibold"><i class="bi bi-card-text"></i> Summary</span>
+                </div>
+                <div class="card-body">
+                    <textarea class="form-control" name="summary" rows="4"
+                              placeholder="Write a brief summary of the meeting...">{{ ai_summary }}</textarea>
+                </div>
+            </div>
+
+            <!-- Discussion Points -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
+                    <span class="fw-semibold"><i class="bi bi-chat-dots"></i> Discussion Points</span>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="addField('discussion')">
+                        <i class="bi bi-plus"></i> Add Point
+                    </button>
+                </div>
+                <div class="card-body" id="discussionContainer">
+                    {% if ai_discussion_points %}
+                        {% for point in ai_discussion_points %}
+                        <div class="input-group mb-2 discussion-item">
+                            <span class="input-group-text">{{ loop.index }}</span>
+                            <input type="text" class="form-control" name="discussion_points"
+                                   value="{{ point }}">
+                            <button type="button" class="btn btn-outline-danger" onclick="removeField(this)">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="input-group mb-2 discussion-item">
+                            <span class="input-group-text">1</span>
+                            <input type="text" class="form-control" name="discussion_points"
+                                   placeholder="Enter a discussion point...">
+                            <button type="button" class="btn btn-outline-danger" onclick="removeField(this)">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Action Items -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
+                    <span class="fw-semibold"><i class="bi bi-check2-square"></i> Action Items</span>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="addActionItem()">
+                        <i class="bi bi-plus"></i> Add Action Item
+                    </button>
+                </div>
+                <div class="card-body" id="actionContainer">
+                    {% if ai_action_items %}
+                        {% for item in ai_action_items %}
+                        <div class="row g-2 mb-2 action-item align-items-center">
+                            <div class="col-md-5">
+                                <input type="text" class="form-control" name="action_desc"
+                                       value="{{ item.description }}" placeholder="Action item description...">
+                            </div>
+                            <div class="col-md-3">
+                                <input type="text" class="form-control" name="action_assignee"
+                                       value="{{ item.assigned_to }}" placeholder="Assigned to...">
+                            </div>
+                            <div class="col-md-3">
+                                <input type="date" class="form-control" name="action_due"
+                                       value="{{ item.due_date }}">
+                            </div>
+                            <div class="col-md-1">
+                                <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeField(this)">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="row g-2 mb-2 action-item align-items-center">
+                            <div class="col-md-5">
+                                <input type="text" class="form-control" name="action_desc"
+                                       placeholder="Action item description...">
+                            </div>
+                            <div class="col-md-3">
+                                <input type="text" class="form-control" name="action_assignee"
+                                       placeholder="Assigned to...">
+                            </div>
+                            <div class="col-md-3">
+                                <input type="date" class="form-control" name="action_due">
+                            </div>
+                            <div class="col-md-1">
+                                <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeField(this)">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Decisions -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
+                    <span class="fw-semibold"><i class="bi bi-bookmark-check"></i> Decisions</span>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="addField('decision')">
+                        <i class="bi bi-plus"></i> Add Decision
+                    </button>
+                </div>
+                <div class="card-body" id="decisionContainer">
+                    {% if ai_decisions %}
+                        {% for decision in ai_decisions %}
+                        <div class="input-group mb-2 decision-item">
+                            <span class="input-group-text">{{ loop.index }}</span>
+                            <input type="text" class="form-control" name="decisions"
+                                   value="{{ decision }}">
+                            <button type="button" class="btn btn-outline-danger" onclick="removeField(this)">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="input-group mb-2 decision-item">
+                            <span class="input-group-text">1</span>
+                            <input type="text" class="form-control" name="decisions"
+                                   placeholder="Enter a decision made...">
+                            <button type="button" class="btn btn-outline-danger" onclick="removeField(this)">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Include Transcript Toggle -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-body d-flex align-items-center justify-content-between">
+                    <div>
+                        <span class="fw-semibold">Include full transcript in document</span>
+                        <br><small class="text-muted">Appends the meeting transcript at the end of the MOM document</small>
+                    </div>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="include_transcript"
+                               id="includeTranscript" style="transform: scale(1.3);">
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex justify-content-between">
+                <button type="button" class="btn btn-outline-secondary" onclick="history.back()">
+                    <i class="bi bi-arrow-left"></i> Back to Transcript
+                </button>
+                <button type="submit" class="btn btn-primary btn-lg">
+                    Preview &amp; Send <i class="bi bi-arrow-right"></i>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/mom_builder.js') }}"></script>
+<script>
+// Initialise counters based on server-rendered items
+discussionCount = document.querySelectorAll('#discussionContainer .discussion-item').length;
+decisionCount   = document.querySelectorAll('#decisionContainer .decision-item').length;
+</script>
+{% endblock %}

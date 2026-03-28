@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Send MOM - {{ meeting_subject }} - MOM Generator{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <!-- Breadcrumb -->
+        <nav aria-label="breadcrumb" class="mb-3">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
+                <li class="breadcrumb-item">Transcript</li>
+                <li class="breadcrumb-item">MOM Builder</li>
+                <li class="breadcrumb-item active">Send</li>
+            </ol>
+        </nav>
+
+        <h3 class="fw-bold mb-4">Send Minutes of Meeting</h3>
+
+        <!-- Preview Card -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-bottom py-3">
+                <span class="fw-semibold"><i class="bi bi-file-earmark-word"></i> Document Preview</span>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <p class="mb-1"><strong>Meeting:</strong> {{ meeting_subject }}</p>
+                        <p class="mb-1"><strong>Date:</strong> {{ meeting_date }}</p>
+                        <p class="mb-1"><strong>Time:</strong> {{ meeting_time }}</p>
+                    </div>
+                    <div class="col-md-6">
+                        <p class="mb-1"><strong>Discussion Points:</strong> {{ discussion_count }}</p>
+                        <p class="mb-1"><strong>Action Items:</strong> {{ action_count }}</p>
+                        <p class="mb-1"><strong>Decisions:</strong> {{ decision_count }}</p>
+                    </div>
+                </div>
+                <hr>
+                <div class="d-flex gap-2">
+                    <a href="{{ url_for('main.download_mom') }}" class="btn btn-outline-primary">
+                        <i class="bi bi-download"></i> Download Word Document
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Send Email Card -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-bottom py-3">
+                <span class="fw-semibold"><i class="bi bi-envelope"></i> Send to Customer</span>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('main.send_email') }}" id="sendForm">
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Customer Email Address</label>
+                        <input type="email" class="form-control" name="to_email"
+                               placeholder="customer@example.com" required>
+                        <div class="form-text">
+                            The MOM document will be sent as a Word attachment to this email address.
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Additional Recipients (optional)</label>
+                        <input type="text" class="form-control" name="cc_emails"
+                               placeholder="email1@example.com, email2@example.com">
+                        <div class="form-text">Comma-separated email addresses.</div>
+                    </div>
+
+                    <div class="d-flex justify-content-between align-items-center mt-4">
+                        <button type="button" class="btn btn-outline-secondary" onclick="history.back()">
+                            <i class="bi bi-arrow-left"></i> Back to Builder
+                        </button>
+                        <button type="submit" class="btn btn-success btn-lg" id="sendBtn">
+                            <i class="bi bi-send"></i> Send MOM to Customer
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Success Modal -->
+<div class="modal fade" id="successModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-center p-4">
+            <div class="modal-body">
+                <i class="bi bi-check-circle-fill display-1 text-success"></i>
+                <h4 class="mt-3 fw-bold">MOM Sent Successfully!</h4>
+                <p class="text-muted" id="successMessage"></p>
+                <a href="{{ url_for('main.dashboard') }}" class="btn btn-primary mt-2">
+                    Back to Dashboard
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('sendForm').addEventListener('submit', function(e) {
+    const btn = document.getElementById('sendBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Sending...';
+});
+
+{% if sent_success %}
+const modal = new bootstrap.Modal(document.getElementById('successModal'));
+document.getElementById('successMessage').textContent = 'The MOM document has been sent to {{ sent_to }}.';
+modal.show();
+{% endif %}
+</script>
+{% endblock %}

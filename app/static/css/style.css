@@ -1,0 +1,104 @@
+:root {
+    --cf-primary: #2B579A;
+    --cf-primary-light: #3a6bb5;
+    --cf-bg: #f5f7fa;
+}
+
+body {
+    background-color: var(--cf-bg);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+main {
+    flex: 1;
+}
+
+.navbar {
+    background: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+}
+
+.navbar-brand {
+    font-weight: 700;
+    color: var(--cf-primary) !important;
+}
+
+.btn-primary {
+    background-color: var(--cf-primary);
+    border-color: var(--cf-primary);
+}
+
+.btn-primary:hover {
+    background-color: var(--cf-primary-light);
+    border-color: var(--cf-primary-light);
+}
+
+.btn-outline-primary {
+    color: var(--cf-primary);
+    border-color: var(--cf-primary);
+}
+
+.btn-outline-primary:hover {
+    background-color: var(--cf-primary);
+    border-color: var(--cf-primary);
+    color: white;
+}
+
+.card {
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.card-header {
+    background: white;
+}
+
+.table > :not(caption) > * > * {
+    padding: .875rem .75rem;
+}
+
+.form-control:focus {
+    border-color: var(--cf-primary);
+    box-shadow: 0 0 0 .2rem rgba(43, 87, 154, .15);
+}
+
+.form-check-input:checked {
+    background-color: var(--cf-primary);
+    border-color: var(--cf-primary);
+}
+
+textarea.form-control {
+    resize: vertical;
+}
+
+.breadcrumb-item a {
+    color: var(--cf-primary);
+    text-decoration: none;
+}
+
+.breadcrumb-item a:hover {
+    text-decoration: underline;
+}
+
+.badge {
+    font-weight: 500;
+}
+
+footer {
+    background: white;
+}
+
+.input-group .btn-outline-danger {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+
+@media (max-width: 768px) {
+    .d-flex.justify-content-between {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+}

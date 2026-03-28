@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Admin Dashboard - MOM Generator{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-11">
+
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h3 class="fw-bold mb-1">
+                    <i class="bi bi-shield-lock text-primary"></i> Admin Dashboard
+                </h3>
+                <p class="text-muted mb-0">Track employees who have used the tool and the meetings they accessed.</p>
+            </div>
+        </div>
+
+        <!-- Summary Cards -->
+        <div class="row g-3 mb-4">
+            <div class="col-sm-6 col-md-3">
+                <div class="card border-0 shadow-sm text-center py-3">
+                    <div class="fs-1 fw-bold text-primary">{{ total_users }}</div>
+                    <div class="text-muted small">Total Employees</div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-md-3">
+                <div class="card border-0 shadow-sm text-center py-3">
+                    <div class="fs-1 fw-bold text-success">{{ total_meetings }}</div>
+                    <div class="text-muted small">Meetings Accessed</div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-md-3">
+                <div class="card border-0 shadow-sm text-center py-3">
+                    <div class="fs-1 fw-bold text-info">
+                        {% if total_users > 0 %}
+                            {{ (total_meetings / total_users) | round(1) }}
+                        {% else %}0{% endif %}
+                    </div>
+                    <div class="text-muted small">Avg Meetings / User</div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-md-3">
+                <div class="card border-0 shadow-sm text-center py-3">
+                    <div class="fs-1 fw-bold text-warning">
+                        {{ users | selectattr('login_count') | list | sum(attribute='login_count') }}
+                    </div>
+                    <div class="text-muted small">Total Logins</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Search -->
+        <div class="mb-3">
+            <input type="text" id="userSearch" class="form-control" placeholder="Search by name or email…">
+        </div>
+
+        {% if not users %}
+        <div class="card border-0 shadow-sm">
+            <div class="card-body text-center py-5 text-muted">
+                <i class="bi bi-people fs-1 d-block mb-2"></i>
+                No employees have signed in yet.
+            </div>
+        </div>
+        {% else %}
+
+        <div id="userList">
+        {% for user in users %}
+        <div class="card border-0 shadow-sm mb-4 user-card"
+             data-name="{{ user.name | lower }}"
+             data-email="{{ user.email | lower }}">
+
+            <!-- User header -->
+            <div class="card-header bg-white border-bottom py-3">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="rounded-circle bg-primary d-flex align-items-center justify-content-center text-white fw-bold flex-shrink-0"
+                             style="width:42px;height:42px;font-size:1.1rem;">
+                            {{ user.name[0].upper() if user.name else '?' }}
+                        </div>
+                        <div>
+                            <div class="fw-semibold">{{ user.name or 'Unknown' }}</div>
+                            <div class="text-muted small">{{ user.email }}</div>
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2 flex-wrap">
+                        <span class="badge bg-secondary-subtle text-secondary px-3 py-2">
+                            <i class="bi bi-box-arrow-in-right"></i>
+                            {{ user.login_count }} login{{ 's' if user.login_count != 1 }}
+                        </span>
+                        <span class="badge bg-primary-subtle text-primary px-3 py-2">
+                            <i class="bi bi-camera-video"></i>
+                            {{ user.meetings.count() }} meeting{{ 's' if user.meetings.count() != 1 }}
+                        </span>
+                    </div>
+                </div>
+                <div class="mt-2 small text-muted d-flex gap-3 flex-wrap">
+                    <span><i class="bi bi-calendar-plus"></i> First login: {{ user.first_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+                    <span><i class="bi bi-clock-history"></i> Last login: {{ user.last_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+                </div>
+            </div>
+
+            <!-- Meetings table -->
+            {% set meetings_list = user.meetings.all() %}
+            {% if meetings_list %}
+            <div class="card-body p-0">
+                <table class="table table-hover mb-0 small align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="ps-3" style="width:40px">#</th>
+                            <th>Meeting Subject</th>
+                            <th style="width:130px">Meeting Date</th>
+                            <th style="width:175px">Accessed At (UTC)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for m in meetings_list %}
+                        <tr>
+                            <td class="ps-3 text-muted">{{ loop.index }}</td>
+                            <td>{{ m.subject or '—' }}</td>
+                            <td>{{ m.meeting_date or '—' }}</td>
+                            <td class="text-muted">{{ m.accessed_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="card-body text-muted small py-3">
+                <i class="bi bi-info-circle"></i> No meetings accessed yet.
+            </div>
+            {% endif %}
+
+        </div>
+        {% endfor %}
+        </div>
+
+        {% endif %}
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('userSearch').addEventListener('input', function () {
+    const q = this.value.toLowerCase();
+    document.querySelectorAll('.user-card').forEach(function (card) {
+        const name = card.dataset.name || '';
+        const email = card.dataset.email || '';
+        card.style.display = (name.includes(q) || email.includes(q)) ? '' : 'none';
+    });
+});
+</script>
+{% endblock %}

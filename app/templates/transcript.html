@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Transcript - {{ meeting.subject }} - MOM Generator{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-10">
+        <!-- Breadcrumb -->
+        <nav aria-label="breadcrumb" class="mb-3">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
+                <li class="breadcrumb-item active">Transcript</li>
+            </ol>
+        </nav>
+
+        <div class="d-flex justify-content-between align-items-start mb-4">
+            <div>
+                <h3 class="fw-bold mb-1">{{ meeting.subject }}</h3>
+                <p class="text-muted mb-0">
+                    {{ meeting.start.dateTime[:10] }} &middot;
+                    {{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }}
+                </p>
+            </div>
+        </div>
+
+<form method="POST" action="{{ url_for('main.mom_builder') }}">
+            <input type="hidden" name="event_id" value="{{ meeting.id }}">
+            <input type="hidden" name="meeting_subject" value="{{ meeting.subject }}">
+            <input type="hidden" name="meeting_date" value="{{ meeting.start.dateTime[:10] }}">
+            <input type="hidden" name="meeting_time" value="{{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }}">
+            <input type="hidden" name="attendees_json" value="{{ attendees_json }}">
+
+            <!-- Transcript Editor -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-bottom py-3">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span class="fw-semibold">
+                            <i class="bi bi-body-text"></i> Meeting Transcript
+                        </span>
+                        <span class="badge bg-success-subtle text-success" id="editBadge" style="display:none;">
+                            Edited
+                        </span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">
+                        Review and edit the transcript below. You can modify, remove, or add content
+                        before proceeding to build the MOM document.
+                    </p>
+                    <textarea class="form-control font-monospace" name="transcript"
+                              rows="20" id="transcriptArea"
+                              placeholder="No transcript available. You can type meeting notes here manually.">{{ transcript_text }}</textarea>
+                </div>
+            </div>
+
+            <div class="d-flex justify-content-between">
+                <a href="{{ url_for('main.dashboard') }}" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-left"></i> Back to Dashboard
+                </a>
+                <button type="submit" class="btn btn-primary btn-lg">
+                    Proceed to MOM Builder <i class="bi bi-arrow-right"></i>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('transcriptArea').addEventListener('input', function() {
+    document.getElementById('editBadge').style.display = 'inline-block';
+});
+</script>
+{% endblock %}

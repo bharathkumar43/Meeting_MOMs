@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Sign In - MOM Generator{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center align-items-center" style="min-height: 70vh;">
+    <div class="col-md-5">
+        <div class="card shadow-lg border-0">
+            <div class="card-body p-5 text-center">
+                <div class="mb-4">
+                    <i class="bi bi-journal-check display-1 text-primary"></i>
+                </div>
+                <h2 class="fw-bold mb-2">Meeting MOM Generator</h2>
+                <p class="text-muted mb-4">
+                    Generate and send professional Minutes of Meeting documents
+                    to your customers directly from Microsoft Teams transcripts.
+                </p>
+                <a href="{{ url_for('main.login') }}" class="btn btn-primary btn-lg w-100 d-flex align-items-center justify-content-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 23 23" fill="currentColor">
+                        <path d="M0 0h11v11H0zM12 0h11v11H12zM0 12h11v11H0zM12 12h11v11H12z"/>
+                    </svg>
+                    Sign in with Microsoft
+                </a>
+                <p class="text-muted small mt-4 mb-0">
+                    Only authorized migration managers can access this application.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
