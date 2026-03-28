@@ -10,7 +10,7 @@ class Config:
     AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID")
 
     AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}"
-    REDIRECT_URI = "http://localhost:5100/auth/callback"
+    REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:5100/auth/callback")
 
     SCOPES = [
         "User.Read",
@@ -25,7 +25,7 @@ class Config:
     SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-secret-key-change-in-production")
 
     SESSION_COOKIE_SAMESITE = "Lax"
-    SESSION_COOKIE_SECURE = False
+    SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
     SESSION_COOKIE_HTTPONLY = True
 
     ORG_DOMAIN = os.getenv("ORG_DOMAIN", "cloudfuze.com")
