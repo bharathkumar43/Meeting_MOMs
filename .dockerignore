@@ -12,3 +12,4 @@ flask_session/
 *.docx
 .env
 *.md
+node_modules/

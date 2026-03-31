@@ -1,6 +1,14 @@
 # ============================================================
 #  Meeting MOM Generator - Docker Deployment Script
-#  Run this from the project root directory in PowerShell
+#  
+#  Usage:
+#    .\deploy.ps1              # First-time setup + start
+#    .\deploy.ps1 -Action up   # Start containers
+#    .\deploy.ps1 -Action down # Stop containers
+#    .\deploy.ps1 -Action restart
+#    .\deploy.ps1 -Action rebuild
+#    .\deploy.ps1 -Action logs
+#    .\deploy.ps1 -Action status
 # ============================================================
 
 param(
@@ -11,52 +19,124 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Write-Step($msg) {
-    Write-Host "`n>>> $msg" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host ">>> $msg" -ForegroundColor Cyan
+    Write-Host ("=" * 60) -ForegroundColor DarkGray
 }
 
-# Pre-flight checks
+function Write-Success($msg) {
+    Write-Host $msg -ForegroundColor Green
+}
+
+function Write-Warn($msg) {
+    Write-Host $msg -ForegroundColor Yellow
+}
+
+function Write-Err($msg) {
+    Write-Host "ERROR: $msg" -ForegroundColor Red
+}
+
+# ── Pre-flight checks ────────────────────────────────────────
+
 function Test-Prerequisites {
     Write-Step "Checking prerequisites"
 
+    # Docker installed?
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        Write-Host "ERROR: Docker is not installed or not in PATH." -ForegroundColor Red
-        Write-Host "Install Docker Desktop from https://docs.docker.com/desktop/install/windows-install/"
+        Write-Err "Docker is not installed or not in PATH."
+        Write-Host "  Install Docker Desktop: https://docs.docker.com/desktop/install/windows-install/"
+        exit 1
+    }
+    Write-Success "  [OK] Docker found"
+
+    # Docker running?
+    try {
+        docker info *>$null
+        Write-Success "  [OK] Docker daemon is running"
+    } catch {
+        Write-Err "Docker daemon is not running. Start Docker Desktop first."
         exit 1
     }
 
-    if (-not (Get-Command docker-compose -ErrorAction SilentlyContinue) -and
-        -not (docker compose version 2>$null)) {
-        Write-Host "ERROR: docker-compose is not available." -ForegroundColor Red
+    # Docker Compose available?
+    $composeAvailable = $false
+    try {
+        docker compose version *>$null
+        $composeAvailable = $true
+    } catch {}
+    if (-not $composeAvailable) {
+        try {
+            docker-compose version *>$null
+            $composeAvailable = $true
+        } catch {}
+    }
+    if (-not $composeAvailable) {
+        Write-Err "docker compose is not available."
         exit 1
     }
+    Write-Success "  [OK] Docker Compose found"
 
+    # .env file exists?
     if (-not (Test-Path ".env")) {
-        Write-Host "ERROR: .env file not found." -ForegroundColor Red
-        Write-Host "Copy .env.example to .env and fill in your values:"
-        Write-Host "  Copy-Item .env.example .env"
-        exit 1
+        Write-Warn "  .env file not found. Creating from .env.example..."
+        if (Test-Path ".env.example") {
+            Copy-Item ".env.example" ".env"
+            Write-Warn "  Created .env from .env.example"
+            Write-Warn "  IMPORTANT: Edit .env and fill in your actual values before continuing!"
+            Write-Host ""
+            Write-Host "  Required values to set:" -ForegroundColor White
+            Write-Host "    - AZURE_CLIENT_ID"
+            Write-Host "    - AZURE_CLIENT_SECRET"
+            Write-Host "    - AZURE_TENANT_ID"
+            Write-Host "    - FLASK_SECRET_KEY"
+            Write-Host "    - POSTGRES_PASSWORD"
+            Write-Host "    - REDIRECT_URI (set to your server URL)"
+            Write-Host "    - OPENAI_API_KEY"
+            Write-Host ""
+            Read-Host "  Press Enter after editing .env to continue (or Ctrl+C to cancel)"
+        } else {
+            Write-Err ".env.example not found either. Cannot proceed."
+            exit 1
+        }
+    }
+    Write-Success "  [OK] .env file found"
+
+    # Check port 5100 is free
+    $portInUse = Get-NetTCPConnection -LocalPort 5100 -ErrorAction SilentlyContinue
+    if ($portInUse) {
+        Write-Warn "  Port 5100 is already in use. It may be this app already running."
+    } else {
+        Write-Success "  [OK] Port 5100 is available"
     }
 
-    Write-Host "All prerequisites met." -ForegroundColor Green
+    Write-Host ""
+    Write-Success "All prerequisites met."
 }
+
+# ── Actions ──────────────────────────────────────────────────
 
 switch ($Action) {
     "up" {
         Test-Prerequisites
+
         Write-Step "Building and starting containers"
         docker compose up -d --build
+
         Write-Host ""
         Write-Host "============================================" -ForegroundColor Green
-        Write-Host "  App is running at http://localhost:5100"     -ForegroundColor Green
+        Write-Host "  MOM Generator is running on port 5100"      -ForegroundColor Green
+        Write-Host "  URL: http://localhost:5100"                  -ForegroundColor Green
         Write-Host "============================================" -ForegroundColor Green
         Write-Host ""
+
+        Write-Step "Container status"
         docker compose ps
     }
 
     "down" {
-        Write-Step "Stopping and removing containers"
+        Write-Step "Stopping containers"
         docker compose down
-        Write-Host "Containers stopped." -ForegroundColor Yellow
+        Write-Warn "Containers stopped."
     }
 
     "restart" {
@@ -64,22 +144,24 @@ switch ($Action) {
         docker compose down
         docker compose up -d --build
         Write-Host ""
-        Write-Host "App restarted at http://localhost:5100" -ForegroundColor Green
+        Write-Success "App restarted on port 5100"
+        Write-Host ""
         docker compose ps
     }
 
     "rebuild" {
-        Write-Step "Rebuilding from scratch (no cache)"
+        Write-Step "Full rebuild (no cache)"
         docker compose down
         docker compose build --no-cache
         docker compose up -d
         Write-Host ""
-        Write-Host "App rebuilt and running at http://localhost:5100" -ForegroundColor Green
+        Write-Success "App rebuilt and running on port 5100"
+        Write-Host ""
         docker compose ps
     }
 
     "logs" {
-        Write-Step "Showing live logs (Ctrl+C to exit)"
+        Write-Step "Live logs (Ctrl+C to exit)"
         docker compose logs -f --tail 100
     }
 
@@ -87,7 +169,7 @@ switch ($Action) {
         Write-Step "Container status"
         docker compose ps
         Write-Host ""
-        Write-Step "Recent app logs"
-        docker compose logs --tail 20 app
+        Write-Step "Recent app logs (last 30 lines)"
+        docker compose logs --tail 30 mom-app
     }
 }

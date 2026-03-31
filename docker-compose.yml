@@ -1,36 +1,46 @@
 services:
-  db:
+  mom-db:
     image: postgres:16-alpine
+    container_name: mom_postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-meeting_moms}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - mom_pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - mom_network
 
-  app:
+  mom-app:
     build: .
+    container_name: mom_app
     restart: unless-stopped
     ports:
       - "5100:5100"
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-meeting_moms}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@mom-db:5432/${POSTGRES_DB:-meeting_moms}
     depends_on:
-      db:
+      mom-db:
         condition: service_healthy
     volumes:
-      - session_data:/app/flask_session
+      - mom_session:/app/flask_session
+    networks:
+      - mom_network
 
 volumes:
-  pgdata:
-  session_data:
+  mom_pgdata:
+  mom_session:
+
+networks:
+  mom_network:
+    driver: bridge
