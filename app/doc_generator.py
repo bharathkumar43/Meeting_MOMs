@@ -7,7 +7,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 
 LOGO_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "static", "cloudfuze_logo.png"
+    os.path.dirname(os.path.abspath(__file__)), "static", "Clip path group.svg"
 )
 
 
@@ -29,13 +29,24 @@ def _add_horizontal_line(doc):
 
 def _prepare_logo():
     """
-    Flatten the logo PNG onto a white background so it renders
-    with full color brightness in Word instead of looking faded.
-    Returns an in-memory BytesIO stream of the flattened PNG.
+    Convert the logo (SVG or PNG) to a flattened PNG on a white background
+    so it renders with full brightness in Word.
+    Returns an in-memory BytesIO stream.
     """
     from PIL import Image
 
-    img = Image.open(LOGO_PATH).convert("RGBA")
+    if LOGO_PATH.lower().endswith(".svg"):
+        from svglib.svglib import svg2rlg
+        from reportlab.graphics import renderPM
+
+        drawing = svg2rlg(LOGO_PATH)
+        png_buf = io.BytesIO()
+        renderPM.drawToFile(drawing, png_buf, fmt="PNG", dpi=300)
+        png_buf.seek(0)
+        img = Image.open(png_buf).convert("RGBA")
+    else:
+        img = Image.open(LOGO_PATH).convert("RGBA")
+
     background = Image.new("RGBA", img.size, (255, 255, 255, 255))
     composite = Image.alpha_composite(background, img)
     composite = composite.convert("RGB")
