@@ -36,14 +36,10 @@ def _prepare_logo():
     from PIL import Image
 
     if LOGO_PATH.lower().endswith(".svg"):
-        from svglib.svglib import svg2rlg
-        from reportlab.graphics import renderPM
+        import cairosvg
 
-        drawing = svg2rlg(LOGO_PATH)
-        png_buf = io.BytesIO()
-        renderPM.drawToFile(drawing, png_buf, fmt="PNG", dpi=300)
-        png_buf.seek(0)
-        img = Image.open(png_buf).convert("RGBA")
+        png_bytes = cairosvg.svg2png(url=LOGO_PATH, dpi=300)
+        img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     else:
         img = Image.open(LOGO_PATH).convert("RGBA")
 
