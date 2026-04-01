@@ -11,35 +11,37 @@
                 <h3 class="fw-bold mb-1">
                     <i class="bi bi-shield-lock text-primary"></i> Admin Dashboard
                 </h3>
-                <p class="text-muted mb-0">Track employees who have used the tool and the meetings they accessed.</p>
+                <p class="text-muted mb-0">Track employee activity, pending MOMs, and sent documents.</p>
             </div>
         </div>
 
         <!-- Summary Cards -->
         <div class="row g-3 mb-4">
-            <div class="col-sm-6 col-md-3">
+            <div class="col-sm-6 col-lg">
                 <div class="card border-0 shadow-sm text-center py-3">
                     <div class="fs-1 fw-bold text-primary">{{ total_users }}</div>
-                    <div class="text-muted small">Total Employees</div>
+                    <div class="text-muted small">Employees</div>
                 </div>
             </div>
-            <div class="col-sm-6 col-md-3">
+            <div class="col-sm-6 col-lg">
                 <div class="card border-0 shadow-sm text-center py-3">
-                    <div class="fs-1 fw-bold text-success">{{ total_meetings }}</div>
+                    <div class="fs-1 fw-bold text-info">{{ total_meetings }}</div>
                     <div class="text-muted small">Meetings Accessed</div>
                 </div>
             </div>
-            <div class="col-sm-6 col-md-3">
+            <div class="col-sm-6 col-lg">
                 <div class="card border-0 shadow-sm text-center py-3">
-                    <div class="fs-1 fw-bold text-info">
-                        {% if total_users > 0 %}
-                            {{ (total_meetings / total_users) | round(1) }}
-                        {% else %}0{% endif %}
-                    </div>
-                    <div class="text-muted small">Avg Meetings / User</div>
+                    <div class="fs-1 fw-bold text-success">{{ total_sent }}</div>
+                    <div class="text-muted small">MOMs Sent</div>
                 </div>
             </div>
-            <div class="col-sm-6 col-md-3">
+            <div class="col-sm-6 col-lg">
+                <div class="card border-0 shadow-sm text-center py-3">
+                    <div class="fs-1 fw-bold text-danger">{{ total_pending }}</div>
+                    <div class="text-muted small">MOMs Pending</div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-lg">
                 <div class="card border-0 shadow-sm text-center py-3">
                     <div class="fs-1 fw-bold text-warning">
                         {{ users | selectattr('login_count') | list | sum(attribute='login_count') }}
@@ -49,92 +51,257 @@
             </div>
         </div>
 
-        <!-- Search -->
-        <div class="mb-3">
-            <input type="text" id="userSearch" class="form-control" placeholder="Search by name or email…">
-        </div>
+        <!-- Tabs -->
+        <ul class="nav nav-tabs mb-4" id="adminTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="pending-tab" data-bs-toggle="tab"
+                        data-bs-target="#pending" type="button" role="tab">
+                    <i class="bi bi-clock-history"></i> Pending MOMs
+                    {% if total_pending > 0 %}
+                    <span class="badge bg-danger ms-1">{{ total_pending }}</span>
+                    {% endif %}
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="sent-tab" data-bs-toggle="tab"
+                        data-bs-target="#sent" type="button" role="tab">
+                    <i class="bi bi-check2-circle"></i> Sent MOMs
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="users-tab" data-bs-toggle="tab"
+                        data-bs-target="#users" type="button" role="tab">
+                    <i class="bi bi-people"></i> Employees
+                </button>
+            </li>
+        </ul>
 
-        {% if not users %}
-        <div class="card border-0 shadow-sm">
-            <div class="card-body text-center py-5 text-muted">
-                <i class="bi bi-people fs-1 d-block mb-2"></i>
-                No employees have signed in yet.
-            </div>
-        </div>
-        {% else %}
+        <div class="tab-content" id="adminTabContent">
 
-        <div id="userList">
-        {% for user in users %}
-        <div class="card border-0 shadow-sm mb-4 user-card"
-             data-name="{{ user.name | lower }}"
-             data-email="{{ user.email | lower }}">
-
-            <!-- User header -->
-            <div class="card-header bg-white border-bottom py-3">
-                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                    <div class="d-flex align-items-center gap-3">
-                        <div class="rounded-circle bg-primary d-flex align-items-center justify-content-center text-white fw-bold flex-shrink-0"
-                             style="width:42px;height:42px;font-size:1.1rem;">
-                            {{ user.name[0].upper() if user.name else '?' }}
-                        </div>
-                        <div>
-                            <div class="fw-semibold">{{ user.name or 'Unknown' }}</div>
-                            <div class="text-muted small">{{ user.email }}</div>
-                        </div>
-                    </div>
-                    <div class="d-flex gap-2 flex-wrap">
-                        <span class="badge bg-secondary-subtle text-secondary px-3 py-2">
-                            <i class="bi bi-box-arrow-in-right"></i>
-                            {{ user.login_count }} login{{ 's' if user.login_count != 1 }}
-                        </span>
-                        <span class="badge bg-primary-subtle text-primary px-3 py-2">
-                            <i class="bi bi-camera-video"></i>
-                            {{ user.meetings.count() }} meeting{{ 's' if user.meetings.count() != 1 }}
+            <!-- ── Pending MOMs Tab ── -->
+            <div class="tab-pane fade show active" id="pending" role="tabpanel">
+                {% if pending_moms %}
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white border-bottom py-3">
+                        <span class="fw-semibold text-danger">
+                            <i class="bi bi-exclamation-triangle"></i>
+                            {{ total_pending }} meeting{{ 's' if total_pending != 1 }} accessed but MOM not sent
                         </span>
                     </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0 align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th class="ps-3" style="width:40px">#</th>
+                                        <th>Manager</th>
+                                        <th>Meeting Subject</th>
+                                        <th style="width:120px">Meeting Date</th>
+                                        <th style="width:175px">Accessed At (UTC)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for m in pending_moms %}
+                                    <tr>
+                                        <td class="ps-3 text-muted">{{ loop.index }}</td>
+                                        <td>
+                                            <div class="fw-semibold">{{ m.user_name }}</div>
+                                            <div class="text-muted small">{{ m.user_email }}</div>
+                                        </td>
+                                        <td>{{ m.subject or '—' }}</td>
+                                        <td>{{ m.meeting_date or '—' }}</td>
+                                        <td class="text-muted small">{{ m.accessed_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
-                <div class="mt-2 small text-muted d-flex gap-3 flex-wrap">
-                    <span><i class="bi bi-calendar-plus"></i> First login: {{ user.first_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
-                    <span><i class="bi bi-clock-history"></i> Last login: {{ user.last_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+                {% else %}
+                <div class="card border-0 shadow-sm">
+                    <div class="card-body text-center py-5 text-muted">
+                        <i class="bi bi-check-circle display-4 text-success d-block mb-2"></i>
+                        No pending MOMs. All accessed meetings have been sent.
+                    </div>
                 </div>
+                {% endif %}
             </div>
 
-            <!-- Meetings table -->
-            {% set meetings_list = user.meetings.all() %}
-            {% if meetings_list %}
-            <div class="card-body p-0">
-                <table class="table table-hover mb-0 small align-middle">
-                    <thead class="table-light">
-                        <tr>
-                            <th class="ps-3" style="width:40px">#</th>
-                            <th>Meeting Subject</th>
-                            <th style="width:130px">Meeting Date</th>
-                            <th style="width:175px">Accessed At (UTC)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for m in meetings_list %}
-                        <tr>
-                            <td class="ps-3 text-muted">{{ loop.index }}</td>
-                            <td>{{ m.subject or '—' }}</td>
-                            <td>{{ m.meeting_date or '—' }}</td>
-                            <td class="text-muted">{{ m.accessed_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+            <!-- ── Sent MOMs Tab ── -->
+            <div class="tab-pane fade" id="sent" role="tabpanel">
+                {% if sent_moms %}
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white border-bottom py-3">
+                        <span class="fw-semibold text-success">
+                            <i class="bi bi-send-check"></i>
+                            {{ total_sent }} MOM{{ 's' if total_sent != 1 }} sent to customers
+                        </span>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0 align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th class="ps-3" style="width:40px">#</th>
+                                        <th>Sent By</th>
+                                        <th>Meeting Subject</th>
+                                        <th style="width:120px">Meeting Date</th>
+                                        <th>Sent To</th>
+                                        <th style="width:175px">Sent At (UTC)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for m in sent_moms %}
+                                    <tr>
+                                        <td class="ps-3 text-muted">{{ loop.index }}</td>
+                                        <td>
+                                            <div class="fw-semibold">{{ m.user_name }}</div>
+                                            <div class="text-muted small">{{ m.user_email }}</div>
+                                        </td>
+                                        <td>{{ m.subject or '—' }}</td>
+                                        <td>{{ m.meeting_date or '—' }}</td>
+                                        <td>
+                                            <span class="badge bg-success-subtle text-success">
+                                                {{ m.sent_to }}
+                                            </span>
+                                        </td>
+                                        <td class="text-muted small">{{ m.sent_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <div class="card border-0 shadow-sm">
+                    <div class="card-body text-center py-5 text-muted">
+                        <i class="bi bi-envelope display-4 d-block mb-2"></i>
+                        No MOMs have been sent yet.
+                    </div>
+                </div>
+                {% endif %}
             </div>
-            {% else %}
-            <div class="card-body text-muted small py-3">
-                <i class="bi bi-info-circle"></i> No meetings accessed yet.
+
+            <!-- ── Employees Tab ── -->
+            <div class="tab-pane fade" id="users" role="tabpanel">
+
+                <div class="mb-3">
+                    <input type="text" id="userSearch" class="form-control"
+                           placeholder="Search by name or email...">
+                </div>
+
+                {% if not users %}
+                <div class="card border-0 shadow-sm">
+                    <div class="card-body text-center py-5 text-muted">
+                        <i class="bi bi-people fs-1 d-block mb-2"></i>
+                        No employees have signed in yet.
+                    </div>
+                </div>
+                {% else %}
+
+                <div id="userList">
+                {% for user in users %}
+                {# Build deduplicated lists before rendering the card #}
+                {% set raw_meetings = user.meetings.all() %}
+                {% set sent_list = user.sent_moms.all() %}
+                {% set sent_keys = [] %}
+                {% for s in sent_list %}
+                    {% if sent_keys.append(s.subject ~ '|' ~ s.meeting_date) %}{% endif %}
+                {% endfor %}
+                {% set seen = {} %}
+                {% set unique_meetings = [] %}
+                {% for m in raw_meetings %}
+                    {% set key = m.subject ~ '|' ~ m.meeting_date %}
+                    {% if key not in seen %}
+                        {% if seen.update({key: true}) %}{% endif %}
+                        {% if unique_meetings.append(m) %}{% endif %}
+                    {% endif %}
+                {% endfor %}
+
+                <div class="card border-0 shadow-sm mb-4 user-card"
+                     data-name="{{ user.name | lower }}"
+                     data-email="{{ user.email | lower }}">
+
+                    <div class="card-header bg-white border-bottom py-3">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                            <div class="d-flex align-items-center gap-3">
+                                <div class="rounded-circle bg-primary d-flex align-items-center justify-content-center text-white fw-bold flex-shrink-0"
+                                     style="width:42px;height:42px;font-size:1.1rem;">
+                                    {{ user.name[0].upper() if user.name else '?' }}
+                                </div>
+                                <div>
+                                    <div class="fw-semibold">{{ user.name or 'Unknown' }}</div>
+                                    <div class="text-muted small">{{ user.email }}</div>
+                                </div>
+                            </div>
+                            <div class="d-flex gap-2 flex-wrap">
+                                <span class="badge bg-secondary-subtle text-secondary px-3 py-2">
+                                    <i class="bi bi-box-arrow-in-right"></i>
+                                    {{ user.login_count }} login{{ 's' if user.login_count != 1 }}
+                                </span>
+                                <span class="badge bg-primary-subtle text-primary px-3 py-2">
+                                    <i class="bi bi-camera-video"></i>
+                                    {{ unique_meetings|length }} meeting{{ 's' if unique_meetings|length != 1 }}
+                                </span>
+                                <span class="badge bg-success-subtle text-success px-3 py-2">
+                                    <i class="bi bi-send-check"></i>
+                                    {{ user.sent_moms.count() }} sent
+                                </span>
+                            </div>
+                        </div>
+                        <div class="mt-2 small text-muted d-flex gap-3 flex-wrap">
+                            <span><i class="bi bi-calendar-plus"></i> First login: {{ user.first_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+                            <span><i class="bi bi-clock-history"></i> Last login: {{ user.last_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+                        </div>
+                    </div>
+
+                    {% if unique_meetings %}
+                    <div class="card-body p-0">
+                        <table class="table table-hover mb-0 small align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th class="ps-3" style="width:40px">#</th>
+                                    <th>Meeting Subject</th>
+                                    <th style="width:120px">Meeting Date</th>
+                                    <th style="width:175px">Last Accessed</th>
+                                    <th style="width:100px" class="text-center">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for m in unique_meetings %}
+                                <tr>
+                                    <td class="ps-3 text-muted">{{ loop.index }}</td>
+                                    <td>{{ m.subject or '—' }}</td>
+                                    <td>{{ m.meeting_date or '—' }}</td>
+                                    <td class="text-muted">{{ m.accessed_at.strftime('%Y-%m-%d %H:%M') }} UTC</td>
+                                    <td class="text-center">
+                                        {% if (m.subject ~ '|' ~ m.meeting_date) in sent_keys %}
+                                            <span class="badge bg-success">Sent</span>
+                                        {% else %}
+                                            <span class="badge bg-warning text-dark">Pending</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                    <div class="card-body text-muted small py-3">
+                        <i class="bi bi-info-circle"></i> No meetings accessed yet.
+                    </div>
+                    {% endif %}
+
+                </div>
+                {% endfor %}
+                </div>
+
+                {% endif %}
             </div>
-            {% endif %}
 
         </div>
-        {% endfor %}
-        </div>
-
-        {% endif %}
 
     </div>
 </div>

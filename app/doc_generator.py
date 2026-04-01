@@ -245,7 +245,7 @@ def generate_mom_document(
     footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = footer_para.add_run(
         "This document is confidential and intended solely for the recipients listed above.\n"
-        f"Generated on {datetime.now().strftime('%B %d, %Y at %I:%M %p')}"
+        f"Generated on {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p')} UTC"
     )
     run.font.size = Pt(8)
     run.font.color.rgb = RGBColor(150, 150, 150)

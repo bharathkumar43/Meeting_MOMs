@@ -17,7 +17,10 @@ from app.meeting_filter import (
 from app.doc_generator import generate_mom_document
 from app.email_sender import send_mom_email
 from app.mom_generator import generate_mom_from_transcript
-from app.activity_tracker import record_login, record_meeting_access, get_all_users, get_user_stats
+from app.activity_tracker import (
+    record_login, record_meeting_access, record_mom_sent,
+    get_all_users, get_user_stats, get_pending_moms, get_sent_moms,
+)
 from config import Config
 
 main_bp = Blueprint("main", __name__)
@@ -351,6 +354,17 @@ def send_email():
             meeting_date=mom_data["meeting_date"],
             doc_bytes=doc_bytes,
         )
+
+        user = session.get("user", {})
+        email = (user.get("preferred_username") or user.get("upn") or "").lower()
+        if email:
+            record_mom_sent(
+                email=email,
+                subject=mom_data["meeting_subject"],
+                meeting_date=mom_data["meeting_date"],
+                sent_to=to_email,
+            )
+
         flash(f"MOM sent successfully to {to_email}!", "success")
 
         return render_template(
@@ -385,10 +399,16 @@ def send_email():
 @admin_required
 def admin_dashboard():
     users = get_all_users()
-    total_users, total_meetings = get_user_stats()
+    total_users, total_meetings, total_sent = get_user_stats()
+    pending_moms = get_pending_moms()
+    sent_moms = get_sent_moms()
     return render_template(
         "admin.html",
         users=users,
         total_users=total_users,
         total_meetings=total_meetings,
+        total_sent=total_sent,
+        total_pending=len(pending_moms),
+        pending_moms=pending_moms,
+        sent_moms=sent_moms,
     )

@@ -19,6 +19,13 @@ class User(db.Model):
         order_by="MeetingAccess.accessed_at.desc()",
     )
 
+    sent_moms = db.relationship(
+        "MOMSent",
+        backref="user",
+        lazy="dynamic",
+        order_by="MOMSent.sent_at.desc()",
+    )
+
     def __repr__(self):
         return f"<User {self.email}>"
 
@@ -34,3 +41,17 @@ class MeetingAccess(db.Model):
 
     def __repr__(self):
         return f"<MeetingAccess {self.subject} by user_id={self.user_id}>"
+
+
+class MOMSent(db.Model):
+    __tablename__ = "mom_sent"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    subject = db.Column(db.String(500), nullable=False, default="")
+    meeting_date = db.Column(db.String(20), nullable=False, default="")
+    sent_to = db.Column(db.String(255), nullable=False, default="")
+    sent_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<MOMSent {self.subject} to {self.sent_to}>"
