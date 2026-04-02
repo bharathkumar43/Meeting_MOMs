@@ -70,6 +70,20 @@ class GraphClient:
         resp.raise_for_status()
         return resp.json().get("value", [])
 
+    def check_transcript_exists(self, join_url):
+        """
+        Check if a meeting has transcripts available.
+        Returns True if at least one transcript exists, False otherwise.
+        """
+        try:
+            online_meeting = self.get_online_meeting_by_join_url(join_url)
+            if not online_meeting:
+                return False
+            transcripts = self.list_transcripts(online_meeting["id"])
+            return len(transcripts) > 0
+        except Exception:
+            return False
+
     def get_transcript_content(self, meeting_id, transcript_id):
         """
         Fetch the actual transcript text content.

@@ -44,6 +44,12 @@ class Config:
         if email.strip()
     ]
 
+    MANAGER_EMAILS = [
+        email.strip().lower()
+        for email in os.getenv("MANAGER_EMAILS", "").split(",")
+        if email.strip()
+    ]
+
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
     SQLALCHEMY_DATABASE_URI = os.getenv(

@@ -20,6 +20,7 @@ from app.mom_generator import generate_mom_from_transcript
 from app.activity_tracker import (
     record_login, record_meeting_access, record_mom_sent,
     get_all_users, get_user_stats, get_pending_moms, get_sent_moms,
+    get_managers, get_non_managers,
 )
 from config import Config
 
@@ -102,7 +103,8 @@ def dashboard():
     end_date = request.args.get("end_date", "")
     keyword = request.args.get("keyword", "")
 
-    meetings = None
+    recorded_meetings = None
+    unrecorded_meetings = None
 
     if not start_date:
         start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -121,13 +123,26 @@ def dashboard():
                 keywords = [k.strip() for k in keyword.split(",")]
                 meetings = filter_by_subject(meetings, keywords)
 
+            recorded_meetings = []
+            unrecorded_meetings = []
+            for meeting in meetings:
+                join_url = meeting.get("onlineMeeting", {}).get("joinUrl", "")
+                if join_url and client.check_transcript_exists(join_url):
+                    meeting["has_transcript"] = True
+                    recorded_meetings.append(meeting)
+                else:
+                    meeting["has_transcript"] = False
+                    unrecorded_meetings.append(meeting)
+
         except Exception as e:
             flash(f"Error fetching meetings: {str(e)}", "danger")
-            meetings = []
+            recorded_meetings = []
+            unrecorded_meetings = []
 
     return render_template(
         "dashboard.html",
-        meetings=meetings,
+        recorded_meetings=recorded_meetings,
+        unrecorded_meetings=unrecorded_meetings,
         start_date=start_date,
         end_date=end_date,
         keyword=keyword,
@@ -399,16 +414,27 @@ def send_email():
 @admin_required
 def admin_dashboard():
     users = get_all_users()
+    managers = get_managers()
+    non_managers = get_non_managers()
     total_users, total_meetings, total_sent = get_user_stats()
     pending_moms = get_pending_moms()
     sent_moms = get_sent_moms()
+
+    manager_emails = Config.MANAGER_EMAILS
+    manager_pending = [p for p in pending_moms if p.user_email in manager_emails]
+    manager_sent = [s for s in sent_moms if s.user_email in manager_emails]
+
     return render_template(
         "admin.html",
         users=users,
+        managers=managers,
+        non_managers=non_managers,
         total_users=total_users,
         total_meetings=total_meetings,
         total_sent=total_sent,
         total_pending=len(pending_moms),
         pending_moms=pending_moms,
         sent_moms=sent_moms,
+        manager_pending=manager_pending,
+        manager_sent=manager_sent,
     )

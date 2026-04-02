@@ -2,6 +2,7 @@ from datetime import datetime
 from sqlalchemy import func
 from app import db
 from app.models import User, MeetingAccess, MOMSent
+from config import Config
 
 
 def record_login(email: str, name: str):
@@ -58,6 +59,30 @@ def record_mom_sent(email: str, subject: str, meeting_date: str, sent_to: str):
 def get_all_users():
     """Return all users ordered by last login descending."""
     return User.query.order_by(User.last_login.desc()).all()
+
+
+def get_managers():
+    """Return users whose email is in MANAGER_EMAILS, ordered by last login."""
+    if not Config.MANAGER_EMAILS:
+        return []
+    return (
+        User.query
+        .filter(User.email.in_(Config.MANAGER_EMAILS))
+        .order_by(User.last_login.desc())
+        .all()
+    )
+
+
+def get_non_managers():
+    """Return users whose email is NOT in MANAGER_EMAILS."""
+    if not Config.MANAGER_EMAILS:
+        return User.query.order_by(User.last_login.desc()).all()
+    return (
+        User.query
+        .filter(~User.email.in_(Config.MANAGER_EMAILS))
+        .order_by(User.last_login.desc())
+        .all()
+    )
 
 
 def get_user_stats():

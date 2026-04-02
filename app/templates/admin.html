@@ -1,6 +1,100 @@
 {% extends "base.html" %}
 {% block title %}Admin Dashboard - MOM Generator{% endblock %}
 
+{# ── Reusable macro for a user card with meetings table ── #}
+{% macro user_card(user) %}
+{% set raw_meetings = user.meetings.all() %}
+{% set sent_list = user.sent_moms.all() %}
+{% set sent_keys = [] %}
+{% for s in sent_list %}
+    {% if sent_keys.append(s.subject ~ '|' ~ s.meeting_date) %}{% endif %}
+{% endfor %}
+{% set seen = {} %}
+{% set unique_meetings = [] %}
+{% for m in raw_meetings %}
+    {% set key = m.subject ~ '|' ~ m.meeting_date %}
+    {% if key not in seen %}
+        {% if seen.update({key: true}) %}{% endif %}
+        {% if unique_meetings.append(m) %}{% endif %}
+    {% endif %}
+{% endfor %}
+
+<div class="card border-0 shadow-sm mb-4 user-card"
+     data-name="{{ user.name | lower }}"
+     data-email="{{ user.email | lower }}">
+
+    <div class="card-header bg-white border-bottom py-3">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <div class="d-flex align-items-center gap-3">
+                <div class="rounded-circle bg-primary d-flex align-items-center justify-content-center text-white fw-bold flex-shrink-0"
+                     style="width:42px;height:42px;font-size:1.1rem;">
+                    {{ user.name[0].upper() if user.name else '?' }}
+                </div>
+                <div>
+                    <div class="fw-semibold">{{ user.name or 'Unknown' }}</div>
+                    <div class="text-muted small">{{ user.email }}</div>
+                </div>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <span class="badge bg-secondary-subtle text-secondary px-3 py-2">
+                    <i class="bi bi-box-arrow-in-right"></i>
+                    {{ user.login_count }} login{{ 's' if user.login_count != 1 }}
+                </span>
+                <span class="badge bg-primary-subtle text-primary px-3 py-2">
+                    <i class="bi bi-camera-video"></i>
+                    {{ unique_meetings|length }} meeting{{ 's' if unique_meetings|length != 1 }}
+                </span>
+                <span class="badge bg-success-subtle text-success px-3 py-2">
+                    <i class="bi bi-send-check"></i>
+                    {{ user.sent_moms.count() }} sent
+                </span>
+            </div>
+        </div>
+        <div class="mt-2 small text-muted d-flex gap-3 flex-wrap">
+            <span><i class="bi bi-calendar-plus"></i> First login: {{ user.first_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+            <span><i class="bi bi-clock-history"></i> Last login: {{ user.last_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+        </div>
+    </div>
+
+    {% if unique_meetings %}
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0 small align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th class="ps-3" style="width:40px">#</th>
+                    <th>Meeting Subject</th>
+                    <th style="width:120px">Meeting Date</th>
+                    <th style="width:175px">Last Accessed</th>
+                    <th style="width:100px" class="text-center">Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in unique_meetings %}
+                <tr>
+                    <td class="ps-3 text-muted">{{ loop.index }}</td>
+                    <td>{{ m.subject or '—' }}</td>
+                    <td>{{ m.meeting_date or '—' }}</td>
+                    <td class="text-muted">{{ m.accessed_at.strftime('%Y-%m-%d %H:%M') }} UTC</td>
+                    <td class="text-center">
+                        {% if (m.subject ~ '|' ~ m.meeting_date) in sent_keys %}
+                            <span class="badge bg-success">Sent</span>
+                        {% else %}
+                            <span class="badge bg-warning text-dark">Pending</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="card-body text-muted small py-3">
+        <i class="bi bi-info-circle"></i> No meetings accessed yet.
+    </div>
+    {% endif %}
+</div>
+{% endmacro %}
+
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-lg-11">
@@ -69,9 +163,17 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="users-tab" data-bs-toggle="tab"
-                        data-bs-target="#users" type="button" role="tab">
-                    <i class="bi bi-people"></i> Employees
+                <button class="nav-link" id="managers-tab" data-bs-toggle="tab"
+                        data-bs-target="#managersPane" type="button" role="tab">
+                    <i class="bi bi-person-badge"></i> Migration Managers
+                    <span class="badge bg-primary ms-1">{{ managers|length }}</span>
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="others-tab" data-bs-toggle="tab"
+                        data-bs-target="#othersPane" type="button" role="tab">
+                    <i class="bi bi-people"></i> Other Employees
+                    <span class="badge bg-secondary ms-1">{{ non_managers|length }}</span>
                 </button>
             </li>
         </ul>
@@ -87,6 +189,11 @@
                             <i class="bi bi-exclamation-triangle"></i>
                             {{ total_pending }} meeting{{ 's' if total_pending != 1 }} accessed but MOM not sent
                         </span>
+                        {% if manager_pending %}
+                        <span class="badge bg-danger-subtle text-danger ms-2">
+                            {{ manager_pending|length }} from managers
+                        </span>
+                        {% endif %}
                     </div>
                     <div class="card-body p-0">
                         <div class="table-responsive">
@@ -94,10 +201,11 @@
                                 <thead class="table-light">
                                     <tr>
                                         <th class="ps-3" style="width:40px">#</th>
-                                        <th>Manager</th>
+                                        <th>Employee</th>
                                         <th>Meeting Subject</th>
                                         <th style="width:120px">Meeting Date</th>
                                         <th style="width:175px">Accessed At (UTC)</th>
+                                        <th style="width:80px" class="text-center">Role</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -111,6 +219,13 @@
                                         <td>{{ m.subject or '—' }}</td>
                                         <td>{{ m.meeting_date or '—' }}</td>
                                         <td class="text-muted small">{{ m.accessed_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                        <td class="text-center">
+                                            {% if m.user_email in manager_pending|map(attribute='user_email')|list %}
+                                                <span class="badge bg-primary-subtle text-primary">Manager</span>
+                                            {% else %}
+                                                <span class="badge bg-secondary-subtle text-secondary">Other</span>
+                                            {% endif %}
+                                        </td>
                                     </tr>
                                     {% endfor %}
                                 </tbody>
@@ -137,6 +252,11 @@
                             <i class="bi bi-send-check"></i>
                             {{ total_sent }} MOM{{ 's' if total_sent != 1 }} sent to customers
                         </span>
+                        {% if manager_sent %}
+                        <span class="badge bg-success-subtle text-success ms-2">
+                            {{ manager_sent|length }} by managers
+                        </span>
+                        {% endif %}
                     </div>
                     <div class="card-body p-0">
                         <div class="table-responsive">
@@ -184,120 +304,52 @@
                 {% endif %}
             </div>
 
-            <!-- ── Employees Tab ── -->
-            <div class="tab-pane fade" id="users" role="tabpanel">
+            <!-- ── Migration Managers Tab ── -->
+            <div class="tab-pane fade" id="managersPane" role="tabpanel">
 
                 <div class="mb-3">
-                    <input type="text" id="userSearch" class="form-control"
-                           placeholder="Search by name or email...">
+                    <input type="text" class="form-control search-field" data-target="managerList"
+                           placeholder="Search managers by name or email...">
                 </div>
 
-                {% if not users %}
+                {% if not managers %}
                 <div class="card border-0 shadow-sm">
                     <div class="card-body text-center py-5 text-muted">
-                        <i class="bi bi-people fs-1 d-block mb-2"></i>
-                        No employees have signed in yet.
+                        <i class="bi bi-person-badge fs-1 d-block mb-2"></i>
+                        No migration managers have signed in yet.
+                        <br><small>Add manager emails to <code>MANAGER_EMAILS</code> in .env</small>
                     </div>
                 </div>
                 {% else %}
-
-                <div id="userList">
-                {% for user in users %}
-                {# Build deduplicated lists before rendering the card #}
-                {% set raw_meetings = user.meetings.all() %}
-                {% set sent_list = user.sent_moms.all() %}
-                {% set sent_keys = [] %}
-                {% for s in sent_list %}
-                    {% if sent_keys.append(s.subject ~ '|' ~ s.meeting_date) %}{% endif %}
-                {% endfor %}
-                {% set seen = {} %}
-                {% set unique_meetings = [] %}
-                {% for m in raw_meetings %}
-                    {% set key = m.subject ~ '|' ~ m.meeting_date %}
-                    {% if key not in seen %}
-                        {% if seen.update({key: true}) %}{% endif %}
-                        {% if unique_meetings.append(m) %}{% endif %}
-                    {% endif %}
-                {% endfor %}
-
-                <div class="card border-0 shadow-sm mb-4 user-card"
-                     data-name="{{ user.name | lower }}"
-                     data-email="{{ user.email | lower }}">
-
-                    <div class="card-header bg-white border-bottom py-3">
-                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                            <div class="d-flex align-items-center gap-3">
-                                <div class="rounded-circle bg-primary d-flex align-items-center justify-content-center text-white fw-bold flex-shrink-0"
-                                     style="width:42px;height:42px;font-size:1.1rem;">
-                                    {{ user.name[0].upper() if user.name else '?' }}
-                                </div>
-                                <div>
-                                    <div class="fw-semibold">{{ user.name or 'Unknown' }}</div>
-                                    <div class="text-muted small">{{ user.email }}</div>
-                                </div>
-                            </div>
-                            <div class="d-flex gap-2 flex-wrap">
-                                <span class="badge bg-secondary-subtle text-secondary px-3 py-2">
-                                    <i class="bi bi-box-arrow-in-right"></i>
-                                    {{ user.login_count }} login{{ 's' if user.login_count != 1 }}
-                                </span>
-                                <span class="badge bg-primary-subtle text-primary px-3 py-2">
-                                    <i class="bi bi-camera-video"></i>
-                                    {{ unique_meetings|length }} meeting{{ 's' if unique_meetings|length != 1 }}
-                                </span>
-                                <span class="badge bg-success-subtle text-success px-3 py-2">
-                                    <i class="bi bi-send-check"></i>
-                                    {{ user.sent_moms.count() }} sent
-                                </span>
-                            </div>
-                        </div>
-                        <div class="mt-2 small text-muted d-flex gap-3 flex-wrap">
-                            <span><i class="bi bi-calendar-plus"></i> First login: {{ user.first_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
-                            <span><i class="bi bi-clock-history"></i> Last login: {{ user.last_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
-                        </div>
-                    </div>
-
-                    {% if unique_meetings %}
-                    <div class="card-body p-0">
-                        <table class="table table-hover mb-0 small align-middle">
-                            <thead class="table-light">
-                                <tr>
-                                    <th class="ps-3" style="width:40px">#</th>
-                                    <th>Meeting Subject</th>
-                                    <th style="width:120px">Meeting Date</th>
-                                    <th style="width:175px">Last Accessed</th>
-                                    <th style="width:100px" class="text-center">Status</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for m in unique_meetings %}
-                                <tr>
-                                    <td class="ps-3 text-muted">{{ loop.index }}</td>
-                                    <td>{{ m.subject or '—' }}</td>
-                                    <td>{{ m.meeting_date or '—' }}</td>
-                                    <td class="text-muted">{{ m.accessed_at.strftime('%Y-%m-%d %H:%M') }} UTC</td>
-                                    <td class="text-center">
-                                        {% if (m.subject ~ '|' ~ m.meeting_date) in sent_keys %}
-                                            <span class="badge bg-success">Sent</span>
-                                        {% else %}
-                                            <span class="badge bg-warning text-dark">Pending</span>
-                                        {% endif %}
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    {% else %}
-                    <div class="card-body text-muted small py-3">
-                        <i class="bi bi-info-circle"></i> No meetings accessed yet.
-                    </div>
-                    {% endif %}
-
+                <div id="managerList">
+                    {% for user in managers %}
+                        {{ user_card(user) }}
+                    {% endfor %}
                 </div>
-                {% endfor %}
+                {% endif %}
+            </div>
+
+            <!-- ── Other Employees Tab ── -->
+            <div class="tab-pane fade" id="othersPane" role="tabpanel">
+
+                <div class="mb-3">
+                    <input type="text" class="form-control search-field" data-target="othersList"
+                           placeholder="Search employees by name or email...">
                 </div>
 
+                {% if not non_managers %}
+                <div class="card border-0 shadow-sm">
+                    <div class="card-body text-center py-5 text-muted">
+                        <i class="bi bi-people fs-1 d-block mb-2"></i>
+                        No other employees have signed in yet.
+                    </div>
+                </div>
+                {% else %}
+                <div id="othersList">
+                    {% for user in non_managers %}
+                        {{ user_card(user) }}
+                    {% endfor %}
+                </div>
                 {% endif %}
             </div>
 
@@ -309,12 +361,17 @@
 
 {% block scripts %}
 <script>
-document.getElementById('userSearch').addEventListener('input', function () {
-    const q = this.value.toLowerCase();
-    document.querySelectorAll('.user-card').forEach(function (card) {
-        const name = card.dataset.name || '';
-        const email = card.dataset.email || '';
-        card.style.display = (name.includes(q) || email.includes(q)) ? '' : 'none';
+document.querySelectorAll('.search-field').forEach(function (input) {
+    input.addEventListener('input', function () {
+        const q = this.value.toLowerCase();
+        const targetId = this.dataset.target;
+        const container = document.getElementById(targetId);
+        if (!container) return;
+        container.querySelectorAll('.user-card').forEach(function (card) {
+            const name = card.dataset.name || '';
+            const email = card.dataset.email || '';
+            card.style.display = (name.includes(q) || email.includes(q)) ? '' : 'none';
+        });
     });
 });
 </script>

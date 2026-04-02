@@ -41,77 +41,168 @@
         </div>
 
         <!-- Results -->
-        {% if meetings is not none %}
-        <div class="card border-0 shadow-sm">
-            <div class="card-header bg-white border-bottom py-3">
-                <div class="d-flex justify-content-between align-items-center">
-                    <span class="fw-semibold">
-                        <i class="bi bi-camera-video"></i>
-                        {{ meetings|length }} customer meeting{{ 's' if meetings|length != 1 else '' }} found
-                    </span>
-                    <span class="badge bg-info-subtle text-info">
-                        Showing meetings with external attendees
-                    </span>
-                </div>
-            </div>
-            <div class="card-body p-0">
-                {% if meetings %}
-                <div class="table-responsive">
-                    <table class="table table-hover align-middle mb-0">
-                        <thead class="table-light">
-                            <tr>
-                                <th class="ps-4">Meeting</th>
-                                <th>Date &amp; Time</th>
-                                <th>External Attendees</th>
-                                <th class="text-end pe-4">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for meeting in meetings %}
-                            <tr>
-                                <td class="ps-4">
-                                    <div class="fw-semibold">{{ meeting.subject }}</div>
-                                    <small class="text-muted">
-                                        {{ meeting.organizer.emailAddress.name }}
-                                    </small>
-                                </td>
-                                <td>
-                                    <div>{{ meeting.start.dateTime[:10] }}</div>
-                                    <small class="text-muted">
-                                        {{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC
-                                    </small>
-                                </td>
-                                <td>
-                                    {% for att in meeting.external_attendees[:3] %}
-                                    <span class="badge bg-primary-subtle text-primary me-1">
-                                        {{ att.name or att.email }}
-                                    </span>
-                                    {% endfor %}
-                                    {% if meeting.external_attendees|length > 3 %}
-                                    <span class="badge bg-secondary-subtle text-secondary">
-                                        +{{ meeting.external_attendees|length - 3 }} more
-                                    </span>
-                                    {% endif %}
-                                </td>
-                                <td class="text-end pe-4">
-                                    <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=meeting.onlineMeeting.joinUrl) }}"
-                                       class="btn btn-sm btn-outline-primary">
-                                        <i class="bi bi-file-text"></i> View Transcript
-                                    </a>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-                {% else %}
-                <div class="text-center py-5">
-                    <i class="bi bi-calendar-x display-4 text-muted"></i>
-                    <p class="text-muted mt-3">No customer meetings found for the selected date range.</p>
-                </div>
-                {% endif %}
-            </div>
+        {% if recorded_meetings is not none %}
+
+        {% set total_count = (recorded_meetings|length) + (unrecorded_meetings|length) %}
+
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <span class="fw-semibold">
+                <i class="bi bi-camera-video"></i>
+                {{ total_count }} customer meeting{{ 's' if total_count != 1 }} found
+            </span>
+            <span class="badge bg-info-subtle text-info">
+                Meetings with external attendees
+            </span>
         </div>
+
+        <!-- Tabs -->
+        <ul class="nav nav-tabs mb-0" id="meetingTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="recorded-tab" data-bs-toggle="tab"
+                        data-bs-target="#recorded" type="button" role="tab">
+                    <i class="bi bi-record-circle"></i> Recorded Meetings
+                    <span class="badge bg-success ms-1">{{ recorded_meetings|length }}</span>
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="unrecorded-tab" data-bs-toggle="tab"
+                        data-bs-target="#unrecorded" type="button" role="tab">
+                    <i class="bi bi-camera-video-off"></i> Unrecorded Meetings
+                    <span class="badge bg-secondary ms-1">{{ unrecorded_meetings|length }}</span>
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+
+            <!-- ── Recorded Meetings Tab ── -->
+            <div class="tab-pane fade show active" id="recorded" role="tabpanel">
+                <div class="card border-0 shadow-sm rounded-top-0">
+                    <div class="card-body p-0">
+                        {% if recorded_meetings %}
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th class="ps-4">Meeting</th>
+                                        <th>Date &amp; Time</th>
+                                        <th>External Attendees</th>
+                                        <th class="text-end pe-4">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for meeting in recorded_meetings %}
+                                    <tr>
+                                        <td class="ps-4">
+                                            <div class="fw-semibold">{{ meeting.subject }}</div>
+                                            <small class="text-muted">
+                                                {{ meeting.organizer.emailAddress.name }}
+                                            </small>
+                                        </td>
+                                        <td>
+                                            <div>{{ meeting.start.dateTime[:10] }}</div>
+                                            <small class="text-muted">
+                                                {{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC
+                                            </small>
+                                        </td>
+                                        <td>
+                                            {% for att in meeting.external_attendees[:3] %}
+                                            <span class="badge bg-primary-subtle text-primary me-1">
+                                                {{ att.name or att.email }}
+                                            </span>
+                                            {% endfor %}
+                                            {% if meeting.external_attendees|length > 3 %}
+                                            <span class="badge bg-secondary-subtle text-secondary">
+                                                +{{ meeting.external_attendees|length - 3 }} more
+                                            </span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-end pe-4">
+                                            <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=meeting.onlineMeeting.joinUrl) }}"
+                                               class="btn btn-sm btn-outline-primary">
+                                                <i class="bi bi-file-text"></i> View Transcript
+                                            </a>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% else %}
+                        <div class="text-center py-5">
+                            <i class="bi bi-record-circle display-4 text-muted"></i>
+                            <p class="text-muted mt-3">No recorded meetings found for this date range.</p>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Unrecorded Meetings Tab ── -->
+            <div class="tab-pane fade" id="unrecorded" role="tabpanel">
+                <div class="card border-0 shadow-sm rounded-top-0">
+                    <div class="card-body p-0">
+                        {% if unrecorded_meetings %}
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th class="ps-4">Meeting</th>
+                                        <th>Date &amp; Time</th>
+                                        <th>External Attendees</th>
+                                        <th class="text-end pe-4">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for meeting in unrecorded_meetings %}
+                                    <tr>
+                                        <td class="ps-4">
+                                            <div class="fw-semibold">{{ meeting.subject }}</div>
+                                            <small class="text-muted">
+                                                {{ meeting.organizer.emailAddress.name }}
+                                            </small>
+                                        </td>
+                                        <td>
+                                            <div>{{ meeting.start.dateTime[:10] }}</div>
+                                            <small class="text-muted">
+                                                {{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC
+                                            </small>
+                                        </td>
+                                        <td>
+                                            {% for att in meeting.external_attendees[:3] %}
+                                            <span class="badge bg-primary-subtle text-primary me-1">
+                                                {{ att.name or att.email }}
+                                            </span>
+                                            {% endfor %}
+                                            {% if meeting.external_attendees|length > 3 %}
+                                            <span class="badge bg-secondary-subtle text-secondary">
+                                                +{{ meeting.external_attendees|length - 3 }} more
+                                            </span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-end pe-4">
+                                            <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=meeting.onlineMeeting.joinUrl) }}"
+                                               class="btn btn-sm btn-outline-secondary">
+                                                <i class="bi bi-pencil-square"></i> Create MOM Manually
+                                            </a>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% else %}
+                        <div class="text-center py-5">
+                            <i class="bi bi-camera-video-off display-4 text-muted"></i>
+                            <p class="text-muted mt-3">No unrecorded meetings found for this date range.</p>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
         {% endif %}
     </div>
 </div>
