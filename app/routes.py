@@ -1,6 +1,10 @@
 import json
+import logging
+import re
 from datetime import datetime, timedelta
 from functools import wraps
+
+logger = logging.getLogger(__name__)
 
 from flask import (
     Blueprint, render_template, redirect, url_for,
@@ -8,7 +12,7 @@ from flask import (
 )
 import io
 
-from app.auth import get_auth_url, process_auth_callback, get_token, logout as auth_logout
+from app.auth import get_auth_url, process_auth_callback, get_token, get_app_token, logout as auth_logout
 from app.graph_client import GraphClient
 from app.meeting_filter import (
     filter_customer_meetings, filter_by_subject,
@@ -25,6 +29,34 @@ from app.activity_tracker import (
 from config import Config
 
 main_bp = Blueprint("main", __name__)
+
+
+def _normalize_subject(s):
+    """Normalize a meeting subject for comparison.
+    Teams strips special chars like | from recording filenames, so we must
+    remove them and collapse whitespace for both sides to match."""
+    s = s.lower().strip()
+    s = re.sub(r'[|/\\:*?"<>]', ' ', s)
+    s = re.sub(r'\s+', ' ', s)
+    return s
+
+
+def _match_recording(meeting, all_recordings):
+    """Check if a calendar event has a matching recording file in OneDrive."""
+    if not all_recordings:
+        return False
+    meeting_start = meeting.get("start", {}).get("dateTime", "")
+    if not meeting_start:
+        return False
+    meeting_date = meeting_start[:10].replace("-", "")
+    norm_subject = _normalize_subject(meeting.get("subject", ""))
+    for rec in all_recordings:
+        if rec["date"] != meeting_date:
+            continue
+        norm_rec = _normalize_subject(rec["subject"])
+        if norm_rec == norm_subject or norm_rec in norm_subject or norm_subject in norm_rec:
+            return True
+    return False
 
 
 def login_required(f):
@@ -123,15 +155,26 @@ def dashboard():
                 keywords = [k.strip() for k in keyword.split(",")]
                 meetings = filter_by_subject(meetings, keywords)
 
+            app_token = get_app_token()
+            app_client = GraphClient(app_token) if app_token else None
+
+            all_recordings = []
+            if app_client:
+                user_profile = client.get_user_profile()
+                dashboard_user_id = user_profile.get("id", "")
+                if dashboard_user_id:
+                    all_recordings = app_client.build_recording_lookup(
+                        meetings, dashboard_user_id, Config.ORG_DOMAIN
+                    )
+
             recorded_meetings = []
             unrecorded_meetings = []
             for meeting in meetings:
-                join_url = meeting.get("onlineMeeting", {}).get("joinUrl", "")
-                if join_url and client.check_transcript_exists(join_url):
-                    meeting["has_transcript"] = True
+                has_recording = _match_recording(meeting, all_recordings)
+                meeting["has_transcript"] = has_recording
+                if has_recording:
                     recorded_meetings.append(meeting)
                 else:
-                    meeting["has_transcript"] = False
                     unrecorded_meetings.append(meeting)
 
         except Exception as e:
@@ -185,7 +228,7 @@ def transcript():
     transcript_text = ""
     error = None
 
-    # Try to fetch transcript via the online meeting
+    # Step 1: Try delegated token (works if signed-in user is the organizer)
     try:
         online_meeting = client.get_online_meeting_by_join_url(join_url)
         if online_meeting:
@@ -196,12 +239,45 @@ def transcript():
                 vtt_content = client.get_transcript_content(meeting_id, transcript_id)
                 entries = parse_vtt_transcript(vtt_content)
                 transcript_text = transcript_to_readable(entries)
-            else:
-                error = "No transcripts found for this meeting. Was transcription enabled during the call?"
-        else:
-            error = "Could not resolve the online meeting. The meeting may not have transcription enabled."
     except Exception as e:
-        error = f"Could not fetch transcript: {str(e)}"
+        logger.info("Delegated transcript fetch failed: %s", e)
+
+    # Step 2: If delegated didn't work, try app token via the organizer
+    if not transcript_text:
+        organizer_email = (
+            meeting.get("organizer", {}).get("emailAddress", {}).get("address", "")
+        )
+        app_token = get_app_token()
+        if app_token and organizer_email and join_url:
+            try:
+                app_client = GraphClient(app_token)
+                organizer_info = app_client._resolve_user_id_safe(organizer_email)
+                if organizer_info:
+                    online_meeting = app_client.get_online_meeting_for_user(
+                        organizer_info, join_url
+                    )
+                    if online_meeting:
+                        meeting_id = online_meeting["id"]
+                        transcripts = app_client.list_transcripts(
+                            meeting_id, user_id=organizer_info
+                        )
+                        if transcripts:
+                            transcript_id = transcripts[0]["id"]
+                            vtt_content = app_client.get_transcript_content(
+                                meeting_id, transcript_id, user_id=organizer_info
+                            )
+                            entries = parse_vtt_transcript(vtt_content)
+                            transcript_text = transcript_to_readable(entries)
+            except Exception as e:
+                logger.info("App-token transcript fetch failed: %s", e)
+
+    if not transcript_text and not error:
+        error = (
+            "No transcript available for this meeting. "
+            "Note: A meeting can be recorded without having a transcript. "
+            "Transcription must be separately enabled during the Teams call. "
+            "You can still create a MOM by typing your meeting notes below."
+        )
 
     user = session.get("user", {})
     email = (user.get("preferred_username") or user.get("upn") or "").lower()
@@ -299,7 +375,15 @@ def send_page():
         transcript_text=transcript if include_transcript else "",
     )
 
-    # Store in session for download and email sending
+    # Extract external attendee emails for pre-filling
+    org_domain = Config.ORG_DOMAIN.lower()
+    external_emails = [
+        a["email"] for a in attendees
+        if a.get("email") and not a["email"].lower().endswith(f"@{org_domain}")
+    ]
+    primary_email = external_emails[0] if external_emails else ""
+    additional_emails = ", ".join(external_emails[1:]) if len(external_emails) > 1 else ""
+
     session["mom_doc"] = {
         "bytes_hex": doc_bytes.hex(),
         "meeting_subject": title,
@@ -316,6 +400,8 @@ def send_page():
         action_count=len(action_items),
         decision_count=len(decisions),
         sent_success=False,
+        prefill_email=primary_email,
+        prefill_cc=additional_emails,
     )
 
 
@@ -354,17 +440,20 @@ def send_email():
         flash("No document available. Please generate a MOM first.", "warning")
         return redirect(url_for("main.dashboard"))
 
-    to_email = request.form.get("to_email", "")
-    if not to_email:
-        flash("Please provide a customer email address.", "warning")
+    to_email = request.form.get("to_email", "").strip()
+    cc_emails = request.form.get("cc_emails", "").strip()
+
+    all_emails = [e.strip() for e in (to_email + "," + cc_emails).split(",") if e.strip()]
+    if not all_emails:
+        flash("Please provide at least one customer email address.", "warning")
         return redirect(url_for("main.send_page"))
 
     try:
         token = get_token()
         doc_bytes = bytes.fromhex(mom_data["bytes_hex"])
-        filename = send_mom_email(
+        filename, sent_list = send_mom_email(
             access_token=token,
-            to_email=to_email,
+            to_emails=all_emails,
             meeting_title=mom_data["meeting_subject"],
             meeting_date=mom_data["meeting_date"],
             doc_bytes=doc_bytes,
@@ -373,14 +462,16 @@ def send_email():
         user = session.get("user", {})
         email = (user.get("preferred_username") or user.get("upn") or "").lower()
         if email:
-            record_mom_sent(
-                email=email,
-                subject=mom_data["meeting_subject"],
-                meeting_date=mom_data["meeting_date"],
-                sent_to=to_email,
-            )
+            for recipient in sent_list:
+                record_mom_sent(
+                    email=email,
+                    subject=mom_data["meeting_subject"],
+                    meeting_date=mom_data["meeting_date"],
+                    sent_to=recipient.strip(),
+                )
 
-        flash(f"MOM sent successfully to {to_email}!", "success")
+        sent_display = ", ".join(sent_list)
+        flash(f"MOM sent successfully to {sent_display}!", "success")
 
         return render_template(
             "send.html",
@@ -391,7 +482,7 @@ def send_email():
             action_count=0,
             decision_count=0,
             sent_success=True,
-            sent_to=to_email,
+            sent_to=sent_display,
         )
 
     except Exception as e:
@@ -437,4 +528,77 @@ def admin_dashboard():
         sent_moms=sent_moms,
         manager_pending=manager_pending,
         manager_sent=manager_sent,
+    )
+
+
+# ── Admin: Per-User Meetings View ────────────────────────────
+
+@main_bp.route("/admin/user-meetings/<path:user_email>")
+@admin_required
+def admin_user_meetings(user_email):
+    start_date = request.args.get(
+        "start_date",
+        (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),
+    )
+    end_date = request.args.get(
+        "end_date",
+        datetime.now().strftime("%Y-%m-%d"),
+    )
+
+    recorded_meetings = []
+    unrecorded_meetings = []
+    user_display_name = user_email
+    error = None
+
+    try:
+        app_token = get_app_token()
+        if not app_token:
+            error = (
+                "Application token not available. "
+                "Ensure Application permissions (Calendars.Read, OnlineMeetingTranscript.Read.All) "
+                "are configured in Azure AD with admin consent."
+            )
+        else:
+            client = GraphClient(app_token)
+
+            user_info = client.get_user_id(user_email)
+            user_id = user_info["id"]
+            user_display_name = user_info.get("displayName", user_email)
+
+            events = client.list_user_calendar_events(user_id, start_date, end_date)
+            meetings = filter_customer_meetings(events, Config.ORG_DOMAIN)
+
+            all_recordings = client.build_recording_lookup(
+                meetings, user_id, Config.ORG_DOMAIN
+            )
+
+            for meeting in meetings:
+                has_recording = _match_recording(meeting, all_recordings)
+                meeting["has_transcript"] = has_recording
+                if has_recording:
+                    recorded_meetings.append(meeting)
+                else:
+                    unrecorded_meetings.append(meeting)
+
+    except Exception as e:
+        error = f"Error fetching meetings for {user_email}: {str(e)}"
+
+    from app.models import MOMSent, User as UserModel
+    sent_keys = set()
+    db_user = UserModel.query.filter_by(email=user_email.lower()).first()
+    if db_user:
+        sent_records = db_user.sent_moms.all()
+        for s in sent_records:
+            sent_keys.add(f"{s.subject}|{s.meeting_date}")
+
+    return render_template(
+        "admin_user_meetings.html",
+        user_email=user_email,
+        user_display_name=user_display_name,
+        recorded_meetings=recorded_meetings,
+        unrecorded_meetings=unrecorded_meetings,
+        sent_keys=sent_keys,
+        start_date=start_date,
+        end_date=end_date,
+        error=error,
     )

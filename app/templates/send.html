@@ -53,17 +53,22 @@
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Customer Email Address</label>
                         <input type="email" class="form-control" name="to_email"
+                               value="{{ prefill_email or '' }}"
                                placeholder="customer@example.com" required>
                         <div class="form-text">
                             The MOM document will be sent as a Word attachment to this email address.
+                            {% if prefill_email %}
+                            <span class="text-success"><i class="bi bi-check-circle"></i> Auto-filled from meeting attendees.</span>
+                            {% endif %}
                         </div>
                     </div>
 
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Additional Recipients (optional)</label>
                         <input type="text" class="form-control" name="cc_emails"
+                               value="{{ prefill_cc or '' }}"
                                placeholder="email1@example.com, email2@example.com">
-                        <div class="form-text">Comma-separated email addresses.</div>
+                        <div class="form-text">Comma-separated email addresses. All recipients receive the same MOM document.</div>
                     </div>
 
                     <div class="d-flex justify-content-between align-items-center mt-4">

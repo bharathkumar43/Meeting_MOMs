@@ -22,6 +22,8 @@ class Config:
 
     GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
+    APP_SCOPE = "https://graph.microsoft.com/.default"
+
     SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-secret-key-change-in-production")
 
     SESSION_COOKIE_SAMESITE = "Lax"

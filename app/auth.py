@@ -77,6 +77,21 @@ def get_token():
     return None
 
 
+def get_app_token():
+    """
+    Get an application-level access token using Client Credentials flow.
+    This token can access any user's data (for admin monitoring).
+    Requires Application permissions configured in Azure AD.
+    """
+    app = _build_msal_app()
+    result = app.acquire_token_for_client(
+        scopes=[Config.APP_SCOPE],
+    )
+    if result and "access_token" in result:
+        return result["access_token"]
+    return None
+
+
 def is_authenticated():
     """Check if the current session has a valid user."""
     return get_token() is not None
