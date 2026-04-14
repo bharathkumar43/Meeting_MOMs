@@ -72,7 +72,13 @@ class GraphClient:
             headers=self.headers,
             params=params,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            logger.warning(
+                "get_online_meeting_by_join_url: %d - %s",
+                resp.status_code,
+                resp.text[:200],
+            )
+            return None
         meetings = resp.json().get("value", [])
         return meetings[0] if meetings else None
 
@@ -87,10 +93,12 @@ class GraphClient:
             headers=self.headers,
             params=params,
         )
-        if resp.status_code == 403:
-            logger.info("onlineMeetings API requires Application Access Policy")
+        if resp.status_code != 200:
+            logger.warning(
+                "get_online_meeting_for_user: %d - %s",
+                resp.status_code, resp.text[:200],
+            )
             return None
-        resp.raise_for_status()
         meetings = resp.json().get("value", [])
         return meetings[0] if meetings else None
 
@@ -101,7 +109,9 @@ class GraphClient:
         else:
             url = f"{self.base_url}/me/onlineMeetings/{meeting_id}/transcripts"
         resp = requests.get(url, headers=self.headers)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            logger.warning("list_transcripts: %d - %s", resp.status_code, resp.text[:200])
+            return []
         return resp.json().get("value", [])
 
     def check_transcript_exists(self, join_url):
@@ -122,7 +132,7 @@ class GraphClient:
     def get_transcript_content(self, meeting_id, transcript_id, user_id=None):
         """
         Fetch the actual transcript text content.
-        Returns the transcript as plain text (vtt format).
+        Returns the transcript as plain text (vtt format), or None on failure.
         """
         headers = {
             "Authorization": f"Bearer {self.access_token}",
@@ -133,7 +143,9 @@ class GraphClient:
         else:
             url = f"{self.base_url}/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
         resp = requests.get(url, headers=headers, params={"$format": "text/vtt"})
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            logger.warning("get_transcript_content: %d - %s", resp.status_code, resp.text[:200])
+            return None
         return resp.text
 
     def send_email(self, to_emails, subject, body_html, attachment_bytes, filename):
@@ -278,9 +290,9 @@ class GraphClient:
 
     def build_recording_lookup(self, meetings, user_id, org_domain=""):
         """
-        Search OneDrives of the viewed user, all organizers, and all internal
-        attendees for recording files.  Uses a thread pool with limited
-        concurrency to avoid Graph API rate limits.
+        Search OneDrives of the viewed user and all distinct organizers
+        for recording files. Only searches organizers (not all attendees)
+        to keep response times fast.
         """
         if not org_domain:
             org_domain = getattr(Config, "ORG_DOMAIN", "")
@@ -299,15 +311,7 @@ class GraphClient:
                 if uid:
                     user_ids_to_search.add(uid)
 
-            for att in m.get("attendees", []):
-                att_email = (
-                    att.get("emailAddress", {}).get("address", "")
-                ).lower()
-                if att_email and att_email.endswith(f"@{org_domain}") and att_email not in emails_seen:
-                    emails_seen.add(att_email)
-                    uid = self._resolve_user_id_safe(att_email)
-                    if uid:
-                        user_ids_to_search.add(uid)
+        logger.info("Recording lookup: searching %d user(s)", len(user_ids_to_search))
 
         workers = min(len(user_ids_to_search), 4)
         with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
@@ -317,4 +321,5 @@ class GraphClient:
             for future in as_completed(futures):
                 all_recordings.extend(future.result())
 
+        logger.info("Recording lookup: found %d recording(s)", len(all_recordings))
         return all_recordings

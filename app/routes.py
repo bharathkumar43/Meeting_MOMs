@@ -126,6 +126,18 @@ def logout():
     return redirect(url_for("main.index"))
 
 
+@main_bp.route("/admin/grant-consent")
+@admin_required
+def admin_grant_consent():
+    """Redirect admin to Azure AD admin consent page."""
+    consent_url = (
+        f"https://login.microsoftonline.com/{Config.AZURE_TENANT_ID}"
+        f"/adminconsent?client_id={Config.AZURE_CLIENT_ID}"
+        f"&redirect_uri={Config.REDIRECT_URI}"
+    )
+    return redirect(consent_url)
+
+
 # ── Dashboard ────────────────────────────────────────────────
 
 @main_bp.route("/dashboard")
@@ -147,9 +159,12 @@ def dashboard():
         try:
             token = get_token()
             client = GraphClient(token)
+            logger.info("Dashboard: fetching events from %s to %s", start_date, end_date)
             events = client.list_calendar_events(start_date, end_date)
+            logger.info("Dashboard: got %d online meeting events", len(events))
 
             meetings = filter_customer_meetings(events, Config.ORG_DOMAIN)
+            logger.info("Dashboard: %d customer meetings after filter", len(meetings))
 
             if keyword:
                 keywords = [k.strip() for k in keyword.split(",")]
@@ -227,56 +242,104 @@ def transcript():
 
     transcript_text = ""
     error = None
+    organizer_email = (
+        meeting.get("organizer", {}).get("emailAddress", {}).get("address", "")
+    )
 
-    # Step 1: Try delegated token (works if signed-in user is the organizer)
+    # Use the join URL from the calendar event directly (avoids URL encoding issues)
+    meeting_join_url = (
+        meeting.get("onlineMeeting", {}).get("joinUrl", "")
+    )
+    effective_join_url = meeting_join_url or join_url
+
+    logger.info(
+        "Transcript request: subject='%s', organizer='%s', "
+        "join_url_param=%d chars, meeting_join_url=%d chars",
+        meeting.get("subject", ""),
+        organizer_email,
+        len(join_url),
+        len(meeting_join_url),
+    )
+
+    # Step 1: Try delegated token (works when user has OnlineMeetings.Read consent)
     try:
-        online_meeting = client.get_online_meeting_by_join_url(join_url)
+        online_meeting = client.get_online_meeting_by_join_url(effective_join_url)
         if online_meeting:
             meeting_id = online_meeting["id"]
+            logger.info("Step 1 OK: Found online meeting via delegated token")
             transcripts = client.list_transcripts(meeting_id)
+            logger.info("Step 1: %d transcript(s) found", len(transcripts))
             if transcripts:
                 transcript_id = transcripts[0]["id"]
                 vtt_content = client.get_transcript_content(meeting_id, transcript_id)
-                entries = parse_vtt_transcript(vtt_content)
-                transcript_text = transcript_to_readable(entries)
+                if vtt_content:
+                    entries = parse_vtt_transcript(vtt_content)
+                    transcript_text = transcript_to_readable(entries)
+                    logger.info("Step 1 SUCCESS: loaded %d chars", len(transcript_text))
+        else:
+            logger.info("Step 1: No online meeting found via delegated token")
     except Exception as e:
-        logger.info("Delegated transcript fetch failed: %s", e)
+        logger.warning("Step 1 FAILED: %s", e)
 
-    # Step 2: If delegated didn't work, try app token via the organizer
+    # Step 2: If delegated didn't work, try app token
     if not transcript_text:
-        organizer_email = (
-            meeting.get("organizer", {}).get("emailAddress", {}).get("address", "")
-        )
         app_token = get_app_token()
-        if app_token and organizer_email and join_url:
-            try:
-                app_client = GraphClient(app_token)
-                organizer_info = app_client._resolve_user_id_safe(organizer_email)
-                if organizer_info:
+        if app_token and effective_join_url:
+            app_client = GraphClient(app_token)
+
+            user_data = session.get("user", {})
+            signed_in_email = (
+                user_data.get("preferred_username") or user_data.get("upn") or ""
+            )
+            targets = []
+            if organizer_email:
+                targets.append(("organizer", organizer_email))
+            if signed_in_email and signed_in_email.lower() != (organizer_email or "").lower():
+                targets.append(("signed-in user", signed_in_email))
+
+            for label, target_email in targets:
+                if transcript_text:
+                    break
+                try:
+                    uid = app_client._resolve_user_id_safe(target_email)
+                    if not uid:
+                        logger.info("Step 2: Cannot resolve %s (%s)", label, target_email)
+                        continue
+                    logger.info("Step 2: Trying via %s (%s)", label, target_email)
                     online_meeting = app_client.get_online_meeting_for_user(
-                        organizer_info, join_url
+                        uid, effective_join_url
                     )
-                    if online_meeting:
-                        meeting_id = online_meeting["id"]
-                        transcripts = app_client.list_transcripts(
-                            meeting_id, user_id=organizer_info
+                    if not online_meeting:
+                        logger.info("Step 2: No meeting found via %s", label)
+                        continue
+                    meeting_id = online_meeting["id"]
+                    logger.info("Step 2: Found meeting via %s", label)
+                    transcripts = app_client.list_transcripts(meeting_id, user_id=uid)
+                    logger.info("Step 2: %d transcript(s) via %s", len(transcripts), label)
+                    if transcripts:
+                        transcript_id = transcripts[0]["id"]
+                        vtt_content = app_client.get_transcript_content(
+                            meeting_id, transcript_id, user_id=uid
                         )
-                        if transcripts:
-                            transcript_id = transcripts[0]["id"]
-                            vtt_content = app_client.get_transcript_content(
-                                meeting_id, transcript_id, user_id=organizer_info
-                            )
+                        if vtt_content:
                             entries = parse_vtt_transcript(vtt_content)
                             transcript_text = transcript_to_readable(entries)
-            except Exception as e:
-                logger.info("App-token transcript fetch failed: %s", e)
+                            logger.info("Step 2 SUCCESS via %s: %d chars", label, len(transcript_text))
+                except Exception as e:
+                    logger.warning("Step 2 FAILED via %s: %s", label, e)
 
     if not transcript_text and not error:
+        consent_url = (
+            f"https://login.microsoftonline.com/{Config.AZURE_TENANT_ID}"
+            f"/adminconsent?client_id={Config.AZURE_CLIENT_ID}"
+        )
         error = (
-            "No transcript available for this meeting. "
-            "Note: A meeting can be recorded without having a transcript. "
-            "Transcription must be separately enabled during the Teams call. "
-            "You can still create a MOM by typing your meeting notes below."
+            "No transcript available. Possible reasons: "
+            "(1) Transcription was not enabled during the call (recording alone is not enough). "
+            "(2) The Teams Application Access Policy is not configured for this app. "
+            "Ask your Teams Admin to run the PowerShell commands, or grant admin consent at: "
+            f"{consent_url} . "
+            "You can still create a MOM by typing your notes below."
         )
 
     user = session.get("user", {})
