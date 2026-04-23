@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta
 from functools import wraps
@@ -8,9 +9,11 @@ logger = logging.getLogger(__name__)
 
 from flask import (
     Blueprint, render_template, redirect, url_for,
-    request, session, flash, send_file,
+    request, session, flash, send_file, jsonify,
 )
 import io
+from docx import Document
+from werkzeug.utils import secure_filename
 
 from app.auth import get_auth_url, process_auth_callback, get_token, get_app_token, logout as auth_logout
 from app.graph_client import GraphClient
@@ -29,6 +32,42 @@ from app.activity_tracker import (
 from config import Config
 
 main_bp = Blueprint("main", __name__)
+
+TRANSCRIPT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+ALLOWED_TRANSCRIPT_SUFFIXES = {".txt", ".vtt", ".docx"}
+
+
+def _decode_text_file(raw: bytes) -> str:
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _text_from_uploaded_vtt(raw: bytes) -> str:
+    text = _decode_text_file(raw)
+    entries = parse_vtt_transcript(text)
+    if entries:
+        return transcript_to_readable(entries).strip()
+    return text.strip()
+
+
+def _text_from_uploaded_docx(raw: bytes) -> str:
+    doc = Document(io.BytesIO(raw))
+    parts = []
+    for p in doc.paragraphs:
+        t = (p.text or "").strip()
+        if t:
+            parts.append(t)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                t = (cell.text or "").strip()
+                if t:
+                    parts.append(t)
+    return "\n".join(parts).strip()
 
 
 def _normalize_subject(s):
@@ -56,6 +95,88 @@ def _match_recording(meeting, all_recordings):
         norm_rec = _normalize_subject(rec["subject"])
         if norm_rec == norm_subject or norm_rec in norm_subject or norm_subject in norm_rec:
             return True
+    return False
+
+
+def _app_user_ids_for_transcript_lookup(app_client, meeting, signed_in_email="", viewed_user_id=None):
+    """Ordered Graph user IDs to try for app-only onlineMeeting + transcript lookup."""
+    ids = []
+    seen = set()
+
+    def add_uid(uid):
+        if uid and uid not in seen:
+            seen.add(uid)
+            ids.append(uid)
+
+    if viewed_user_id:
+        add_uid(viewed_user_id)
+
+    organizer_email = (
+        meeting.get("organizer", {}).get("emailAddress", {}).get("address", "") or ""
+    )
+    if organizer_email:
+        add_uid(app_client._resolve_user_id_safe(organizer_email))
+
+    if signed_in_email and signed_in_email.lower() != organizer_email.lower():
+        add_uid(app_client._resolve_user_id_safe(signed_in_email))
+
+    return ids
+
+
+def _graph_transcript_exists_app(app_client, join_url, user_ids):
+    """True if any listed user can resolve join_url to an online meeting with transcripts."""
+    if not join_url or not app_client or not user_ids:
+        return False
+    for uid in user_ids:
+        if not uid:
+            continue
+        try:
+            online_meeting = app_client.get_online_meeting_for_user(uid, join_url)
+            if not online_meeting:
+                continue
+            meeting_id = online_meeting["id"]
+            transcripts = app_client.list_transcripts(meeting_id, user_id=uid)
+            if transcripts:
+                return True
+        except Exception as e:
+            logger.debug("App transcript lookup failed for uid=%s: %s", uid, e)
+            continue
+    return False
+
+
+def meeting_has_transcript_signal(
+    meeting,
+    all_recordings,
+    delegated_client,
+    app_client,
+    signed_in_email="",
+    viewed_user_id=None,
+):
+    """
+    True if we expect transcript content to be available: OneDrive recording match
+    OR Graph lists at least one transcript (delegated /me path, then app fallback).
+    """
+    if _match_recording(meeting, all_recordings):
+        return True
+
+    join_url = (meeting.get("onlineMeeting") or {}).get("joinUrl", "") or ""
+    if not join_url:
+        return False
+
+    if delegated_client:
+        try:
+            if delegated_client.check_transcript_exists(join_url):
+                return True
+        except Exception as e:
+            logger.debug("Delegated transcript check failed: %s", e)
+
+    if app_client:
+        ids = _app_user_ids_for_transcript_lookup(
+            app_client, meeting, signed_in_email=signed_in_email, viewed_user_id=viewed_user_id
+        )
+        if _graph_transcript_exists_app(app_client, join_url, ids):
+            return True
+
     return False
 
 
@@ -147,8 +268,7 @@ def dashboard():
     end_date = request.args.get("end_date", "")
     keyword = request.args.get("keyword", "")
 
-    recorded_meetings = None
-    unrecorded_meetings = None
+    meetings = None
 
     if not start_date:
         start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -182,25 +302,28 @@ def dashboard():
                         meetings, dashboard_user_id, Config.ORG_DOMAIN
                     )
 
-            recorded_meetings = []
-            unrecorded_meetings = []
+            user_data = session.get("user", {})
+            signed_in_email = (
+                user_data.get("preferred_username") or user_data.get("upn") or ""
+            )
+
             for meeting in meetings:
-                has_recording = _match_recording(meeting, all_recordings)
-                meeting["has_transcript"] = has_recording
-                if has_recording:
-                    recorded_meetings.append(meeting)
-                else:
-                    unrecorded_meetings.append(meeting)
+                meeting["has_transcript"] = meeting_has_transcript_signal(
+                    meeting,
+                    all_recordings,
+                    client,
+                    app_client,
+                    signed_in_email=signed_in_email,
+                    viewed_user_id=None,
+                )
 
         except Exception as e:
             flash(f"Error fetching meetings: {str(e)}", "danger")
-            recorded_meetings = []
-            unrecorded_meetings = []
+            meetings = []
 
     return render_template(
         "dashboard.html",
-        recorded_meetings=recorded_meetings,
-        unrecorded_meetings=unrecorded_meetings,
+        meetings=meetings,
         start_date=start_date,
         end_date=end_date,
         keyword=keyword,
@@ -241,7 +364,7 @@ def transcript():
         })
 
     transcript_text = ""
-    error = None
+    error = None  # kept for template compatibility; transcript fetch warnings are not shown
     organizer_email = (
         meeting.get("organizer", {}).get("emailAddress", {}).get("address", "")
     )
@@ -328,20 +451,6 @@ def transcript():
                 except Exception as e:
                     logger.warning("Step 2 FAILED via %s: %s", label, e)
 
-    if not transcript_text and not error:
-        consent_url = (
-            f"https://login.microsoftonline.com/{Config.AZURE_TENANT_ID}"
-            f"/adminconsent?client_id={Config.AZURE_CLIENT_ID}"
-        )
-        error = (
-            "No transcript available. Possible reasons: "
-            "(1) Transcription was not enabled during the call (recording alone is not enough). "
-            "(2) The Teams Application Access Policy is not configured for this app. "
-            "Ask your Teams Admin to run the PowerShell commands, or grant admin consent at: "
-            f"{consent_url} . "
-            "You can still create a MOM by typing your notes below."
-        )
-
     user = session.get("user", {})
     email = (user.get("preferred_username") or user.get("upn") or "").lower()
     if email:
@@ -358,6 +467,43 @@ def transcript():
         attendees_json=json.dumps(attendees),
         error=error,
     )
+
+
+@main_bp.route("/transcript/parse-file", methods=["POST"])
+@login_required
+def parse_transcript_file():
+    """Extract plain text from an uploaded .txt, .vtt, or .docx transcript file."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded."}), 400
+    upload = request.files["file"]
+    if not upload or not upload.filename:
+        return jsonify({"error": "No file selected."}), 400
+
+    safe_name = secure_filename(upload.filename)
+    _, ext = os.path.splitext(safe_name.lower())
+    if ext not in ALLOWED_TRANSCRIPT_SUFFIXES:
+        allowed = ", ".join(sorted(ALLOWED_TRANSCRIPT_SUFFIXES))
+        return jsonify({"error": f"Unsupported type. Allowed: {allowed}"}), 400
+
+    raw = upload.read(TRANSCRIPT_UPLOAD_MAX_BYTES + 1)
+    if len(raw) > TRANSCRIPT_UPLOAD_MAX_BYTES:
+        return jsonify({"error": "File is too large (maximum 10 MB)."}), 413
+
+    try:
+        if ext == ".txt":
+            text = _decode_text_file(raw).strip()
+        elif ext == ".vtt":
+            text = _text_from_uploaded_vtt(raw)
+        else:
+            text = _text_from_uploaded_docx(raw)
+    except Exception as e:
+        logger.exception("parse_transcript_file failed")
+        return jsonify({"error": f"Could not read this file: {str(e)}"}), 400
+
+    if not text or not text.strip():
+        return jsonify({"error": "No text could be extracted from this file."}), 400
+
+    return jsonify({"text": text})
 
 
 # ── MOM Builder ──────────────────────────────────────────────
@@ -608,8 +754,7 @@ def admin_user_meetings(user_email):
         datetime.now().strftime("%Y-%m-%d"),
     )
 
-    recorded_meetings = []
-    unrecorded_meetings = []
+    meetings = []
     user_display_name = user_email
     error = None
 
@@ -636,15 +781,18 @@ def admin_user_meetings(user_email):
             )
 
             for meeting in meetings:
-                has_recording = _match_recording(meeting, all_recordings)
-                meeting["has_transcript"] = has_recording
-                if has_recording:
-                    recorded_meetings.append(meeting)
-                else:
-                    unrecorded_meetings.append(meeting)
+                meeting["has_transcript"] = meeting_has_transcript_signal(
+                    meeting,
+                    all_recordings,
+                    delegated_client=None,
+                    app_client=client,
+                    signed_in_email="",
+                    viewed_user_id=user_id,
+                )
 
     except Exception as e:
         error = f"Error fetching meetings for {user_email}: {str(e)}"
+        meetings = []
 
     from app.models import MOMSent, User as UserModel
     sent_keys = set()
@@ -658,8 +806,7 @@ def admin_user_meetings(user_email):
         "admin_user_meetings.html",
         user_email=user_email,
         user_display_name=user_display_name,
-        recorded_meetings=recorded_meetings,
-        unrecorded_meetings=unrecorded_meetings,
+        meetings=meetings,
         sent_keys=sent_keys,
         start_date=start_date,
         end_date=end_date,

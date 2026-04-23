@@ -29,11 +29,27 @@
             <input type="hidden" name="meeting_time" value="{{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC">
             <input type="hidden" name="attendees_json" value="{{ attendees_json }}">
 
-            {% if error %}
-            <div class="alert alert-warning mb-4">
-                <i class="bi bi-info-circle me-2"></i>{{ error }}
+            <!-- Upload file (TXT / VTT / DOCX) -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-bottom py-3">
+                    <span class="fw-semibold">
+                        <i class="bi bi-upload"></i> Upload transcript file
+                    </span>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">
+                        If nothing loaded from Teams, upload a transcript you exported or saved.
+                        Supported: plain text (<code>.txt</code>), WebVTT (<code>.vtt</code>), or Word (<code>.docx</code>). Max 10&nbsp;MB.
+                    </p>
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <input type="file" class="form-control" id="transcriptFile"
+                               accept=".txt,.vtt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                               style="max-width: 28rem;">
+                        <span id="uploadStatus" class="text-muted small"></span>
+                    </div>
+                    <div id="uploadError" class="alert alert-danger mt-3 mb-0 d-none py-2 small"></div>
+                </div>
             </div>
-            {% endif %}
 
             <!-- Transcript Editor -->
             <div class="card border-0 shadow-sm mb-4">
@@ -55,12 +71,12 @@
                     </p>
                     {% else %}
                     <p class="text-muted small mb-3">
-                        No transcript was found. You can type your meeting notes below to generate a MOM.
+                        Add your transcript or notes below, or use <strong>Upload transcript file</strong> above.
                     </p>
                     {% endif %}
                     <textarea class="form-control font-monospace" name="transcript"
                               rows="20" id="transcriptArea"
-                              placeholder="No transcript available. You can type meeting notes here manually.">{{ transcript_text }}</textarea>
+                              placeholder="Paste notes or transcript text here, or upload a file above.">{{ transcript_text }}</textarea>
                 </div>
             </div>
 
@@ -79,8 +95,63 @@
 
 {% block scripts %}
 <script>
-document.getElementById('transcriptArea').addEventListener('input', function() {
-    document.getElementById('editBadge').style.display = 'inline-block';
-});
+(function() {
+    var parseUrl = {{ url_for('main.parse_transcript_file') | tojson }};
+    var area = document.getElementById('transcriptArea');
+    var badge = document.getElementById('editBadge');
+    var uploadStatus = document.getElementById('uploadStatus');
+    var uploadError = document.getElementById('uploadError');
+
+    area.addEventListener('input', function() {
+        badge.style.display = 'inline-block';
+    });
+
+    document.getElementById('transcriptFile').addEventListener('change', async function(e) {
+        var file = e.target.files && e.target.files[0];
+        uploadError.classList.add('d-none');
+        uploadError.textContent = '';
+        uploadStatus.textContent = '';
+        if (!file) return;
+
+        var name = file.name.toLowerCase();
+        var ok = /\.(txt|vtt|docx)$/.test(name);
+        if (!ok) {
+            uploadError.textContent = 'Please choose a .txt, .vtt, or .docx file.';
+            uploadError.classList.remove('d-none');
+            e.target.value = '';
+            return;
+        }
+
+        uploadStatus.textContent = 'Reading file…';
+        var fd = new FormData();
+        fd.append('file', file);
+
+        try {
+            var res = await fetch(parseUrl, {
+                method: 'POST',
+                body: fd,
+                credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            var data = await res.json().catch(function() { return {}; });
+            if (!res.ok) {
+                uploadError.textContent = data.error || ('Request failed (' + res.status + ')');
+                uploadError.classList.remove('d-none');
+                uploadStatus.textContent = '';
+                return;
+            }
+            if (data.text) {
+                area.value = data.text;
+                badge.style.display = 'inline-block';
+                uploadStatus.textContent = 'Loaded into editor.';
+            }
+        } catch (err) {
+            uploadError.textContent = 'Could not upload file. Check your connection and try again.';
+            uploadError.classList.remove('d-none');
+            uploadStatus.textContent = '';
+        }
+        e.target.value = '';
+    });
+})();
 </script>
 {% endblock %}

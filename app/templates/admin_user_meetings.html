@@ -1,60 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ user_display_name }} - Meetings - Admin{% endblock %}
 
-{# Macro for a meetings table #}
-{% macro meetings_table(meetings, show_transcript_badge) %}
-<div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
-        <thead class="table-light">
-            <tr>
-                <th class="ps-3" style="width:40px">#</th>
-                <th>Meeting Subject</th>
-                <th>Date &amp; Time</th>
-                <th>External Attendees</th>
-                <th style="width:100px" class="text-center">MOM Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for meeting in meetings %}
-            {% set meeting_key = meeting.subject ~ '|' ~ meeting.start.dateTime[:10] %}
-            <tr>
-                <td class="ps-3 text-muted">{{ loop.index }}</td>
-                <td>
-                    <div class="fw-semibold">{{ meeting.subject }}</div>
-                    <small class="text-muted">{{ meeting.organizer.emailAddress.name }}</small>
-                </td>
-                <td>
-                    <div>{{ meeting.start.dateTime[:10] }}</div>
-                    <small class="text-muted">
-                        {{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC
-                    </small>
-                </td>
-                <td>
-                    {% for att in meeting.get('external_attendees', [])[:3] %}
-                    <span class="badge bg-primary-subtle text-primary me-1">
-                        {{ att.name or att.email }}
-                    </span>
-                    {% endfor %}
-                    {% if meeting.get('external_attendees', [])|length > 3 %}
-                    <span class="badge bg-secondary-subtle text-secondary">
-                        +{{ meeting.get('external_attendees', [])|length - 3 }} more
-                    </span>
-                    {% endif %}
-                </td>
-                <td class="text-center">
-                    {% if meeting_key in sent_keys %}
-                        <span class="badge bg-success">Sent</span>
-                    {% else %}
-                        <span class="badge bg-warning text-dark">Pending</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endmacro %}
-
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-lg-11">
@@ -107,8 +53,10 @@
             </div>
         </div>
 
+        {% set total = meetings|length %}
+        {% set with_tx = meetings|selectattr('has_transcript', 'equalto', true)|list|length %}
+
         <!-- Summary -->
-        {% set total = recorded_meetings|length + unrecorded_meetings|length %}
         <div class="row g-3 mb-4">
             <div class="col-sm-4">
                 <div class="card border-0 shadow-sm text-center py-3">
@@ -118,63 +66,85 @@
             </div>
             <div class="col-sm-4">
                 <div class="card border-0 shadow-sm text-center py-3">
-                    <div class="fs-2 fw-bold text-success">{{ recorded_meetings|length }}</div>
-                    <div class="text-muted small">Recorded (with Transcript)</div>
+                    <div class="fs-2 fw-bold text-success">{{ with_tx }}</div>
+                    <div class="text-muted small">With transcript</div>
                 </div>
             </div>
             <div class="col-sm-4">
                 <div class="card border-0 shadow-sm text-center py-3">
-                    <div class="fs-2 fw-bold text-secondary">{{ unrecorded_meetings|length }}</div>
-                    <div class="text-muted small">Unrecorded</div>
+                    <div class="fs-2 fw-bold text-secondary">{{ total - with_tx }}</div>
+                    <div class="text-muted small">Manual MOM only</div>
                 </div>
             </div>
         </div>
 
-        <!-- Tabs -->
-        <ul class="nav nav-tabs mb-0" role="tablist">
-            <li class="nav-item" role="presentation">
-                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#userRecorded" type="button" role="tab">
-                    <i class="bi bi-record-circle"></i> Recorded Meetings
-                    <span class="badge bg-success ms-1">{{ recorded_meetings|length }}</span>
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#userUnrecorded" type="button" role="tab">
-                    <i class="bi bi-camera-video-off"></i> Unrecorded Meetings
-                    <span class="badge bg-secondary ms-1">{{ unrecorded_meetings|length }}</span>
-                </button>
-            </li>
-        </ul>
-
-        <div class="tab-content">
-            <div class="tab-pane fade show active" id="userRecorded" role="tabpanel">
-                <div class="card border-0 shadow-sm rounded-top-0">
-                    <div class="card-body p-0">
-                        {% if recorded_meetings %}
-                            {{ meetings_table(recorded_meetings, true) }}
-                        {% else %}
-                        <div class="text-center py-5 text-muted">
-                            <i class="bi bi-record-circle display-4"></i>
-                            <p class="mt-3">No recorded meetings found for this period.</p>
-                        </div>
-                        {% endif %}
-                    </div>
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-0">
+                {% if meetings %}
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th class="ps-3" style="width:40px">#</th>
+                                <th>Meeting Subject</th>
+                                <th>Date &amp; Time</th>
+                                <th>External Attendees</th>
+                                <th class="text-center">Transcript</th>
+                                <th style="width:100px" class="text-center">MOM Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for meeting in meetings %}
+                            {% set meeting_key = meeting.subject ~ '|' ~ meeting.start.dateTime[:10] %}
+                            <tr>
+                                <td class="ps-3 text-muted">{{ loop.index }}</td>
+                                <td>
+                                    <div class="fw-semibold">{{ meeting.subject }}</div>
+                                    <small class="text-muted">{{ meeting.organizer.emailAddress.name }}</small>
+                                </td>
+                                <td>
+                                    <div>{{ meeting.start.dateTime[:10] }}</div>
+                                    <small class="text-muted">
+                                        {{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC
+                                    </small>
+                                </td>
+                                <td>
+                                    {% for att in meeting.get('external_attendees', [])[:3] %}
+                                    <span class="badge bg-primary-subtle text-primary me-1">
+                                        {{ att.name or att.email }}
+                                    </span>
+                                    {% endfor %}
+                                    {% if meeting.get('external_attendees', [])|length > 3 %}
+                                    <span class="badge bg-secondary-subtle text-secondary">
+                                        +{{ meeting.get('external_attendees', [])|length - 3 }} more
+                                    </span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-center">
+                                    {% if meeting.has_transcript %}
+                                    <span class="badge bg-success-subtle text-success">Available</span>
+                                    {% else %}
+                                    <span class="badge bg-secondary-subtle text-secondary">Manual</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-center">
+                                    {% if meeting_key in sent_keys %}
+                                        <span class="badge bg-success">Sent</span>
+                                    {% else %}
+                                        <span class="badge bg-warning text-dark">Pending</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
                 </div>
-            </div>
-
-            <div class="tab-pane fade" id="userUnrecorded" role="tabpanel">
-                <div class="card border-0 shadow-sm rounded-top-0">
-                    <div class="card-body p-0">
-                        {% if unrecorded_meetings %}
-                            {{ meetings_table(unrecorded_meetings, false) }}
-                        {% else %}
-                        <div class="text-center py-5 text-muted">
-                            <i class="bi bi-camera-video-off display-4"></i>
-                            <p class="mt-3">No unrecorded meetings found for this period.</p>
-                        </div>
-                        {% endif %}
-                    </div>
+                {% else %}
+                <div class="text-center py-5 text-muted">
+                    <i class="bi bi-calendar-x display-4"></i>
+                    <p class="mt-3">No customer meetings found for this period.</p>
                 </div>
+                {% endif %}
             </div>
         </div>
 
