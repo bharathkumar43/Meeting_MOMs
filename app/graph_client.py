@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote
 import requests
 from config import Config
 
@@ -189,6 +190,50 @@ class GraphClient:
             headers=self.headers,
             json=payload,
         )
+        resp.raise_for_status()
+        return True
+
+    def send_mail_as_user(self, sender_mailbox: str, to_emails, subject: str, body_html: str):
+        """
+        Send HTML email from a specific user's mailbox (application token).
+        Uses POST /users/{sender}/sendMail — requires Mail.Send (application) and a valid sender.
+
+        Args:
+            sender_mailbox: UPN or object ID of the mailbox to send from (e.g. shared mailbox).
+            to_emails: str or list of recipient addresses.
+        """
+        if isinstance(to_emails, str):
+            to_emails = [e.strip() for e in to_emails.split(",") if e.strip()]
+
+        recipients = [
+            {"emailAddress": {"address": addr.strip()}}
+            for addr in to_emails
+            if addr.strip()
+        ]
+        if not recipients:
+            raise ValueError("No recipients for send_mail_as_user")
+
+        payload = {
+            "message": {
+                "subject": subject,
+                "body": {
+                    "contentType": "HTML",
+                    "content": body_html,
+                },
+                "toRecipients": recipients,
+            },
+            "saveToSentItems": "true",
+        }
+
+        encoded_sender = quote(sender_mailbox.strip(), safe="")
+        url = f"{self.base_url}/users/{encoded_sender}/sendMail"
+        resp = requests.post(url, headers=self.headers, json=payload)
+        if resp.status_code >= 400:
+            logger.error(
+                "send_mail_as_user failed: %s %s",
+                resp.status_code,
+                resp.text[:500],
+            )
         resp.raise_for_status()
         return True
 

@@ -52,6 +52,11 @@ class Config:
         if email.strip()
     ]
 
+    ZOOM_ACCOUNT_ID = os.getenv("ZOOM_ACCOUNT_ID", "")
+    ZOOM_CLIENT_ID = os.getenv("ZOOM_CLIENT_ID", "")
+    ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET", "")
+    ZOOM_API_BASE = "https://api.zoom.us/v2"
+
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
     SQLALCHEMY_DATABASE_URI = os.getenv(
@@ -59,3 +64,17 @@ class Config:
         "postgresql://postgres:postgres@localhost:5432/meeting_moms",
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+    # Daily audit email (Graph application Mail.Send from AUDIT_SENDER_MAILBOX)
+    AUDIT_REPORT_ENABLED = os.getenv("AUDIT_REPORT_ENABLED", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    AUDIT_SENDER_MAILBOX = os.getenv("AUDIT_SENDER_MAILBOX", "").strip()
+    AUDIT_REPORT_RECIPIENTS = [
+        e.strip()
+        for e in os.getenv("AUDIT_REPORT_RECIPIENTS", "").split(",")
+        if e.strip()
+    ]
+    AUDIT_REPORT_DAYS = int(os.getenv("AUDIT_REPORT_DAYS", "7"))

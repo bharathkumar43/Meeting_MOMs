@@ -27,6 +27,11 @@
                             <i class="bi bi-grid-1x2"></i> Dashboard
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('main.zoom_dashboard') }}">
+                            <i class="bi bi-camera-video"></i> Zoom Meetings
+                        </a>
+                    </li>
                     {% set current_email = session['user'].get('preferred_username', '') or session['user'].get('upn', '') %}
                     {% if current_email.lower() in config.ADMIN_EMAILS %}
                     <li class="nav-item">

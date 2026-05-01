@@ -3,7 +3,10 @@
     "allow": [
       "Bash(venv/Scripts/pip install:*)",
       "Bash(venv/Scripts/flask --app run:app db init)",
-      "Bash(venv/Scripts/flask --app run:app db migrate -m \"add users and meeting_accesses tables\")"
+      "Bash(venv/Scripts/flask --app run:app db migrate -m \"add users and meeting_accesses tables\")",
+      "Bash(xargs wc *)",
+      "WebSearch",
+      "WebFetch(domain:developers.zoom.us)"
     ]
   }
 }

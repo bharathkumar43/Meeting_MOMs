@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import func
 from app import db
 from app.models import User, MeetingAccess, MOMSent
@@ -161,3 +161,119 @@ def get_sent_moms():
         .order_by(MOMSent.sent_at.desc())
         .all()
     )
+
+
+def get_audit_rows(days: int = 7):
+    """
+    Rolling-window audit for users whose last_login falls within the window.
+
+    Per user (among those active):
+    - meetings_opened: distinct (subject, meeting_date) with MeetingAccess.accessed_at in window
+    - sent: distinct (subject, meeting_date) with MOMSent.sent_at in window
+    - pending: distinct meetings opened in window with no MOMSent row for that triple
+
+    Returns:
+        list of dicts: name, email, meetings_opened, pending, sent
+    """
+    since = datetime.utcnow() - timedelta(days=days)
+
+    active_users = (
+        User.query.filter(User.last_login >= since)
+        .order_by(func.lower(User.name))
+        .all()
+    )
+    if not active_users:
+        return []
+
+    # Distinct meetings accessed in window → count per user_id
+    access_distinct = (
+        db.session.query(
+            MeetingAccess.user_id,
+            MeetingAccess.subject,
+            MeetingAccess.meeting_date,
+        )
+        .filter(MeetingAccess.accessed_at >= since)
+        .distinct()
+    ).subquery()
+
+    opened_counts = dict(
+        db.session.query(access_distinct.c.user_id, func.count())
+        .group_by(access_distinct.c.user_id)
+        .all()
+    )
+
+    # Distinct meetings sent in window → count per user_id
+    sent_distinct = (
+        db.session.query(
+            MOMSent.user_id,
+            MOMSent.subject,
+            MOMSent.meeting_date,
+        )
+        .filter(MOMSent.sent_at >= since)
+        .distinct()
+    ).subquery()
+
+    sent_counts = dict(
+        db.session.query(sent_distinct.c.user_id, func.count())
+        .group_by(sent_distinct.c.user_id)
+        .all()
+    )
+
+    # Pending: accessed in window, no matching sent row (any time)
+    access_keys = (
+        db.session.query(
+            MeetingAccess.user_id.label("uid"),
+            MeetingAccess.subject.label("subj"),
+            MeetingAccess.meeting_date.label("md"),
+        )
+        .filter(MeetingAccess.accessed_at >= since)
+        .distinct()
+    ).subquery()
+
+    sent_keys = (
+        db.session.query(
+            MOMSent.user_id.label("uid"),
+            MOMSent.subject.label("subj"),
+            MOMSent.meeting_date.label("md"),
+        )
+        .distinct()
+    ).subquery()
+
+    pending_counts = dict(
+        db.session.query(access_keys.c.uid, func.count())
+        .outerjoin(
+            sent_keys,
+            db.and_(
+                sent_keys.c.uid == access_keys.c.uid,
+                sent_keys.c.subj == access_keys.c.subj,
+                sent_keys.c.md == access_keys.c.md,
+            ),
+        )
+        .filter(sent_keys.c.uid.is_(None))
+        .group_by(access_keys.c.uid)
+        .all()
+    )
+
+    rows = []
+    for u in active_users:
+        uid = u.id
+        rows.append({
+            "name": u.name or "",
+            "email": u.email,
+            "meetings_opened": opened_counts.get(uid, 0),
+            "pending": pending_counts.get(uid, 0),
+            "sent": sent_counts.get(uid, 0),
+        })
+    return rows
+
+
+def get_audit_totals(rows):
+    """Sum columns for summary line (same keys as get_audit_rows dicts)."""
+    if not rows:
+        return {"users": 0, "meetings_opened": 0, "pending": 0, "sent": 0}
+    return {
+        "users": len(rows),
+        "meetings_opened": sum(r["meetings_opened"] for r in rows),
+        "pending": sum(r["pending"] for r in rows),
+        "sent": sum(r["sent"] for r in rows),
+    }

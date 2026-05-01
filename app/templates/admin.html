@@ -152,7 +152,14 @@
         <!-- Tabs -->
         <ul class="nav nav-tabs mb-4" id="adminTabs" role="tablist">
             <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="pending-tab" data-bs-toggle="tab"
+                <button class="nav-link active" id="audit-report-tab" data-bs-toggle="tab"
+                        data-bs-target="#audit-report" type="button" role="tab">
+                    <i class="bi bi-file-earmark-bar-graph"></i> Audit report
+                    <span class="badge bg-dark ms-1">{{ audit_totals.users }}</span>
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="pending-tab" data-bs-toggle="tab"
                         data-bs-target="#pending" type="button" role="tab">
                     <i class="bi bi-clock-history"></i> Pending MOMs
                     {% if total_pending > 0 %}
@@ -184,8 +191,99 @@
 
         <div class="tab-content" id="adminTabContent">
 
+            <!-- ── Audit report (rolling window) ── -->
+            <div class="tab-pane fade show active" id="audit-report" role="tabpanel">
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-header bg-white border-bottom py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                        <div>
+                            <span class="fw-semibold">
+                                <i class="bi bi-calendar-range"></i> Rolling {{ audit_days }}-day audit
+                            </span>
+                            <p class="text-muted small mb-0 mt-1">
+                                Users who signed in during this period; meeting counts use access/send timestamps in the same window.
+                            </p>
+                        </div>
+                        <form method="POST" action="{{ url_for('main.admin_send_audit_report') }}" class="m-0">
+                            <button type="submit" class="btn btn-primary"
+                                    {% if not audit_can_send %}disabled title="Set AUDIT_SENDER_MAILBOX and AUDIT_REPORT_RECIPIENTS in .env"{% endif %}>
+                                <i class="bi bi-envelope-paper"></i> Send audit report by email
+                            </button>
+                        </form>
+                    </div>
+                    <div class="card-body">
+                        {% if not audit_can_send %}
+                        <div class="alert alert-warning py-2 small mb-3">
+                            Configure <code>AUDIT_SENDER_MAILBOX</code> and <code>AUDIT_REPORT_RECIPIENTS</code> in <code>.env</code> to enable sending.
+                            Cron can still use <code>AUDIT_REPORT_ENABLED=true</code>; the button sends regardless of that flag.
+                        </div>
+                        {% else %}
+                        <p class="small text-muted mb-3">
+                            <strong>From:</strong> {{ audit_sender_display }}<br>
+                            <strong>To:</strong> {{ audit_recipients_display }}
+                        </p>
+                        {% endif %}
+
+                        <div class="row g-3 mb-4">
+                            <div class="col-6 col-md-3">
+                                <div class="border rounded p-3 text-center">
+                                    <div class="fs-4 fw-bold text-primary">{{ audit_totals.users }}</div>
+                                    <div class="text-muted small">Users (logged in)</div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="border rounded p-3 text-center">
+                                    <div class="fs-4 fw-bold text-info">{{ audit_totals.meetings_opened }}</div>
+                                    <div class="text-muted small">Meetings opened</div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="border rounded p-3 text-center">
+                                    <div class="fs-4 fw-bold text-warning">{{ audit_totals.pending }}</div>
+                                    <div class="text-muted small">Pending send</div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="border rounded p-3 text-center">
+                                    <div class="fs-4 fw-bold text-success">{{ audit_totals.sent }}</div>
+                                    <div class="text-muted small">MOMs sent</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {% if audit_rows %}
+                        <div class="table-responsive">
+                            <table class="table table-hover table-sm align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th class="ps-3">Name</th>
+                                        <th>Email</th>
+                                        <th class="text-end">Meetings opened</th>
+                                        <th class="text-end">Pending</th>
+                                        <th class="text-end pe-3">Sent</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for r in audit_rows %}
+                                    <tr>
+                                        <td class="ps-3 fw-semibold">{{ r.name or '—' }}</td>
+                                        <td class="text-muted small">{{ r.email }}</td>
+                                        <td class="text-end">{{ r.meetings_opened }}</td>
+                                        <td class="text-end">{{ r.pending }}</td>
+                                        <td class="text-end pe-3">{{ r.sent }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% else %}
+                        <p class="text-muted mb-0"><i class="bi bi-info-circle"></i> No users logged in during this {{ audit_days }}-day window.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
             <!-- ── Pending MOMs Tab ── -->
-            <div class="tab-pane fade show active" id="pending" role="tabpanel">
+            <div class="tab-pane fade" id="pending" role="tabpanel">
                 {% if pending_moms %}
                 <div class="card border-0 shadow-sm">
                     <div class="card-header bg-white border-bottom py-3">
@@ -378,5 +476,12 @@ document.querySelectorAll('.search-field').forEach(function (input) {
         });
     });
 });
+
+if (window.location.hash === '#audit-report') {
+    const tabBtn = document.querySelector('[data-bs-target="#audit-report"]');
+    if (tabBtn && typeof bootstrap !== 'undefined') {
+        new bootstrap.Tab(tabBtn).show();
+    }
+}
 </script>
 {% endblock %}

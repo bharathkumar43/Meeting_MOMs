@@ -17,6 +17,8 @@ from werkzeug.utils import secure_filename
 
 from app.auth import get_auth_url, process_auth_callback, get_token, get_app_token, logout as auth_logout
 from app.graph_client import GraphClient
+from app.zoom_auth import get_zoom_access_token
+from app.zoom_client import ZoomClient
 from app.meeting_filter import (
     filter_customer_meetings, filter_by_subject,
     parse_vtt_transcript, transcript_to_readable,
@@ -28,7 +30,9 @@ from app.activity_tracker import (
     record_login, record_meeting_access, record_mom_sent,
     get_all_users, get_user_stats, get_pending_moms, get_sent_moms,
     get_managers, get_non_managers,
+    get_audit_rows, get_audit_totals,
 )
+from app.audit_report_email import send_daily_audit_report
 from config import Config
 
 main_bp = Blueprint("main", __name__)
@@ -269,13 +273,14 @@ def dashboard():
     keyword = request.args.get("keyword", "")
 
     meetings = None
+    explicitly_searched = bool(request.args.get("start_date") or request.args.get("end_date"))
 
     if not start_date:
         start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     if not end_date:
         end_date = datetime.now().strftime("%Y-%m-%d")
 
-    if start_date and end_date:
+    if explicitly_searched:
         try:
             token = get_token()
             client = GraphClient(token)
@@ -724,6 +729,15 @@ def admin_dashboard():
     manager_pending = [p for p in pending_moms if p.user_email in manager_emails]
     manager_sent = [s for s in sent_moms if s.user_email in manager_emails]
 
+    audit_days = max(1, Config.AUDIT_REPORT_DAYS)
+    audit_rows = get_audit_rows(days=audit_days)
+    audit_totals = get_audit_totals(audit_rows)
+    audit_can_send = bool(
+        Config.AUDIT_SENDER_MAILBOX and Config.AUDIT_REPORT_RECIPIENTS
+    )
+    audit_sender_display = Config.AUDIT_SENDER_MAILBOX or "—"
+    audit_recipients_display = ", ".join(Config.AUDIT_REPORT_RECIPIENTS) or "—"
+
     return render_template(
         "admin.html",
         users=users,
@@ -737,7 +751,25 @@ def admin_dashboard():
         sent_moms=sent_moms,
         manager_pending=manager_pending,
         manager_sent=manager_sent,
+        audit_rows=audit_rows,
+        audit_totals=audit_totals,
+        audit_days=audit_days,
+        audit_can_send=audit_can_send,
+        audit_sender_display=audit_sender_display,
+        audit_recipients_display=audit_recipients_display,
     )
+
+
+@main_bp.route("/admin/send-audit-report", methods=["POST"])
+@admin_required
+def admin_send_audit_report():
+    """Send the rolling audit email now (Graph app-only)."""
+    ok, msg = send_daily_audit_report(force=True)
+    if ok:
+        flash(msg, "success")
+    else:
+        flash(msg, "danger")
+    return redirect(url_for("main.admin_dashboard") + "#audit-report")
 
 
 # ── Admin: Per-User Meetings View ────────────────────────────
@@ -745,14 +777,10 @@ def admin_dashboard():
 @main_bp.route("/admin/user-meetings/<path:user_email>")
 @admin_required
 def admin_user_meetings(user_email):
-    start_date = request.args.get(
-        "start_date",
-        (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),
-    )
-    end_date = request.args.get(
-        "end_date",
-        datetime.now().strftime("%Y-%m-%d"),
-    )
+    today = datetime.now().strftime("%Y-%m-%d")
+    default_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    start_date = request.args.get("start_date") or default_start
+    end_date = request.args.get("end_date") or today
 
     meetings = []
     user_display_name = user_email
@@ -811,4 +839,122 @@ def admin_user_meetings(user_email):
         start_date=start_date,
         end_date=end_date,
         error=error,
+    )
+
+
+# ── Zoom Dashboard ────────────────────────────────────────────
+
+@main_bp.route("/zoom/dashboard")
+@login_required
+def zoom_dashboard():
+    start_date = request.args.get("start_date", "")
+    end_date = request.args.get("end_date", "")
+    keyword = request.args.get("keyword", "")
+
+    explicitly_searched = bool(request.args.get("start_date") or request.args.get("end_date"))
+
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    if not end_date:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+
+    user_data = session.get("user", {})
+    user_email = (user_data.get("preferred_username") or user_data.get("upn") or "").lower()
+
+    zoom_token = get_zoom_access_token()
+    zoom_configured = bool(zoom_token)
+
+    meetings = None
+    if explicitly_searched and zoom_token and user_email:
+        try:
+            zoom = ZoomClient(zoom_token)
+            recordings = zoom.list_user_recordings(user_email, start_date, end_date)
+            meetings = [ZoomClient.normalize_recording(r) for r in recordings]
+
+            if keyword:
+                keywords = [k.strip() for k in keyword.split(",")]
+                meetings = filter_by_subject(meetings, keywords)
+
+        except Exception as e:
+            flash(f"Error fetching Zoom recordings: {str(e)}", "danger")
+            meetings = []
+
+    return render_template(
+        "zoom_dashboard.html",
+        meetings=meetings,
+        start_date=start_date,
+        end_date=end_date,
+        keyword=keyword,
+        zoom_configured=zoom_configured,
+    )
+
+
+# ── Zoom Transcript View ──────────────────────────────────────
+
+@main_bp.route("/zoom/transcript")
+@login_required
+def zoom_transcript():
+    meeting_id = request.args.get("meeting_id", "")
+    if not meeting_id:
+        flash("No meeting ID provided.", "warning")
+        return redirect(url_for("main.zoom_dashboard"))
+
+    zoom_token = get_zoom_access_token()
+    if not zoom_token:
+        flash("Zoom integration is not configured. Add Zoom credentials to your .env file.", "danger")
+        return redirect(url_for("main.zoom_dashboard"))
+
+    zoom = ZoomClient(zoom_token)
+
+    recording = zoom.get_meeting_recordings(meeting_id)
+    if not recording:
+        flash("Could not retrieve Zoom meeting recording.", "warning")
+        return redirect(url_for("main.zoom_dashboard"))
+
+    meeting = ZoomClient.normalize_recording(recording)
+
+    transcript_text = ""
+    if meeting.get("zoom_transcript_url"):
+        try:
+            vtt_content = zoom.get_transcript_content(meeting["zoom_transcript_url"])
+            if vtt_content:
+                entries = parse_vtt_transcript(vtt_content)
+                transcript_text = transcript_to_readable(entries)
+                logger.info("Zoom transcript loaded: %d chars for meeting %s", len(transcript_text), meeting_id)
+        except Exception as e:
+            logger.warning("Zoom transcript fetch failed for %s: %s", meeting_id, e)
+
+    attendees = []
+    external_attendees = []
+    try:
+        participants = zoom.get_meeting_participants(meeting_id)
+        org_domain = Config.ORG_DOMAIN.lower()
+        for p in participants:
+            email = (p.get("user_email") or "").strip()
+            name = (p.get("name") or p.get("user_name") or "").strip()
+            if email:
+                attendees.append({"name": name, "email": email})
+                if not email.lower().endswith(f"@{org_domain}"):
+                    external_attendees.append({"name": name, "email": email})
+    except Exception as e:
+        logger.debug("Zoom participant lookup failed for transcript view %s: %s", meeting_id, e)
+
+    meeting["attendees"] = attendees
+    meeting["external_attendees"] = external_attendees
+
+    user = session.get("user", {})
+    email = (user.get("preferred_username") or user.get("upn") or "").lower()
+    if email:
+        record_meeting_access(
+            email,
+            meeting.get("subject", ""),
+            meeting.get("start", {}).get("dateTime", "")[:10],
+        )
+
+    return render_template(
+        "transcript.html",
+        meeting=meeting,
+        transcript_text=transcript_text,
+        attendees_json=json.dumps(attendees),
+        error=None,
     )

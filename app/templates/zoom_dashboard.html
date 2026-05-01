@@ -1,20 +1,22 @@
 {% extends "base.html" %}
-{% block title %}Dashboard - MOM Generator{% endblock %}
+{% block title %}Zoom Meetings - MOM Generator{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-lg-10">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <div>
-                <h3 class="fw-bold mb-1">Customer Meetings</h3>
-                <p class="text-muted mb-0">Select a meeting to generate Minutes of Meeting</p>
+                <h3 class="fw-bold mb-1">
+                    <i class="bi bi-camera-video-fill text-primary me-2"></i>Zoom Meetings
+                </h3>
+                <p class="text-muted mb-0">Select a Zoom cloud recording to generate Minutes of Meeting</p>
             </div>
         </div>
 
         <!-- Filters -->
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-body">
-                <form method="GET" action="{{ url_for('main.dashboard') }}" class="row g-3 align-items-end">
+                <form method="GET" action="{{ url_for('main.zoom_dashboard') }}" class="row g-3 align-items-end">
                     <div class="col-md-3">
                         <label class="form-label fw-semibold">From Date</label>
                         <input type="date" class="form-control" name="start_date"
@@ -40,11 +42,21 @@
             </div>
         </div>
 
+        {% if not zoom_configured %}
+        <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+            <strong>Zoom not configured.</strong>
+            Add <code>ZOOM_ACCOUNT_ID</code>, <code>ZOOM_CLIENT_ID</code>, and
+            <code>ZOOM_CLIENT_SECRET</code> to your <code>.env</code> file to enable Zoom integration.
+            See <code>.env.example</code> for details.
+        </div>
+        {% endif %}
+
         <!-- Results -->
         {% if meetings is none %}
         <div class="text-center py-5 text-muted">
             <i class="bi bi-search display-4"></i>
-            <p class="mt-3">Select a date range and click <strong>Search</strong> to load your customer meetings.</p>
+            <p class="mt-3">Select a date range and click <strong>Search</strong> to load your Zoom recordings.</p>
         </div>
         {% else %}
 
@@ -54,11 +66,11 @@
         <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
             <span class="fw-semibold">
                 <i class="bi bi-camera-video"></i>
-                {{ total_count }} customer meeting{{ 's' if total_count != 1 }} found
+                {{ total_count }} Zoom recording{{ 's' if total_count != 1 }} found
             </span>
             <div class="d-flex align-items-center gap-2 flex-wrap">
                 <span class="badge bg-info-subtle text-info">
-                    Meetings with external attendees
+                    Cloud recordings
                 </span>
                 {% if total_count %}
                 <span class="badge bg-success-subtle text-success">
@@ -86,19 +98,27 @@
                         </thead>
                         <tbody>
                             {% for meeting in meetings %}
-                            {% set join_url = meeting.get('onlineMeeting', {}).get('joinUrl', '') %}
                             <tr>
                                 <td class="ps-4">
-                                    <div class="fw-semibold">{{ meeting.subject }}</div>
-                                    <small class="text-muted">
-                                        {{ meeting.organizer.emailAddress.name }}
-                                    </small>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <span class="badge bg-primary-subtle text-primary">Zoom</span>
+                                        <div>
+                                            <div class="fw-semibold">{{ meeting.subject }}</div>
+                                            <small class="text-muted">
+                                                {{ meeting.organizer.emailAddress.address }}
+                                            </small>
+                                        </div>
+                                    </div>
                                 </td>
                                 <td>
+                                    {% if meeting.start.dateTime %}
                                     <div>{{ meeting.start.dateTime[:10] }}</div>
                                     <small class="text-muted">
                                         {{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC
                                     </small>
+                                    {% else %}
+                                    <span class="text-muted">—</span>
+                                    {% endif %}
                                 </td>
                                 <td>
                                     {% for att in meeting.external_attendees[:3] %}
@@ -111,15 +131,18 @@
                                         +{{ meeting.external_attendees|length - 3 }} more
                                     </span>
                                     {% endif %}
+                                    {% if not meeting.external_attendees %}
+                                    <span class="text-muted small">—</span>
+                                    {% endif %}
                                 </td>
                                 <td class="text-end pe-4">
                                     {% if meeting.has_transcript %}
-                                    <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=join_url) }}"
+                                    <a href="{{ url_for('main.zoom_transcript', meeting_id=meeting.zoom_meeting_id) }}"
                                        class="btn btn-sm btn-outline-primary">
                                         <i class="bi bi-file-text"></i> View Transcript
                                     </a>
                                     {% else %}
-                                    <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=join_url) }}"
+                                    <a href="{{ url_for('main.zoom_transcript', meeting_id=meeting.zoom_meeting_id) }}"
                                        class="btn btn-sm btn-outline-secondary">
                                         <i class="bi bi-pencil-square"></i> Create MOM Manually
                                     </a>
@@ -132,8 +155,12 @@
                 </div>
                 {% else %}
                 <div class="text-center py-5">
-                    <i class="bi bi-calendar-x display-4 text-muted"></i>
-                    <p class="text-muted mt-3">No customer meetings found for this date range.</p>
+                    <i class="bi bi-camera-video display-4 text-muted"></i>
+                    <p class="text-muted mt-3">No Zoom cloud recordings found for this date range.</p>
+                    <p class="text-muted small">
+                        Only meetings recorded to the Zoom cloud appear here.
+                        Make sure cloud recording and transcription are enabled in your Zoom settings.
+                    </p>
                 </div>
                 {% endif %}
             </div>
