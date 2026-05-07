@@ -6,7 +6,10 @@
       "Bash(venv/Scripts/flask --app run:app db migrate -m \"add users and meeting_accesses tables\")",
       "Bash(xargs wc *)",
       "WebSearch",
-      "WebFetch(domain:developers.zoom.us)"
+      "WebFetch(domain:developers.zoom.us)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\BharathTummaganti\\\\OneDrive - CloudFuze, Inc\\\\Documents\\\\Meeting_MOMs\" -Recurse -Force)",
+      "Bash(Select-Object FullName, PSIsContainer)",
+      "Bash(Format-Table -AutoSize)"
     ]
   }
 }

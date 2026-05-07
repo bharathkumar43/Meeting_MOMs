@@ -31,6 +31,7 @@ from app.activity_tracker import (
     get_all_users, get_user_stats, get_pending_moms, get_sent_moms,
     get_managers, get_non_managers,
     get_audit_rows, get_audit_totals,
+    get_all_user_dashboard_stats,
 )
 from app.audit_report_email import send_daily_audit_report
 from config import Config
@@ -307,20 +308,8 @@ def dashboard():
                         meetings, dashboard_user_id, Config.ORG_DOMAIN
                     )
 
-            user_data = session.get("user", {})
-            signed_in_email = (
-                user_data.get("preferred_username") or user_data.get("upn") or ""
-            )
-
             for meeting in meetings:
-                meeting["has_transcript"] = meeting_has_transcript_signal(
-                    meeting,
-                    all_recordings,
-                    client,
-                    app_client,
-                    signed_in_email=signed_in_email,
-                    viewed_user_id=None,
-                )
+                meeting["has_transcript"] = _match_recording(meeting, all_recordings)
 
         except Exception as e:
             flash(f"Error fetching meetings: {str(e)}", "danger")
@@ -346,13 +335,9 @@ def transcript():
     token = get_token()
     client = GraphClient(token)
 
-    # Fetch the calendar event details
+    # Fetch the calendar event directly by ID (avoids loading 90 days of events)
     try:
-        events = client.list_calendar_events(
-            (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d"),
-            datetime.now().strftime("%Y-%m-%d"),
-        )
-        meeting = next((e for e in events if e["id"] == event_id), None)
+        meeting = client.get_event(event_id)
     except Exception:
         meeting = None
 
@@ -724,6 +709,7 @@ def admin_dashboard():
     total_users, total_meetings, total_sent = get_user_stats()
     pending_moms = get_pending_moms()
     sent_moms = get_sent_moms()
+    user_dashboard_stats = get_all_user_dashboard_stats()
 
     manager_emails = Config.MANAGER_EMAILS
     manager_pending = [p for p in pending_moms if p.user_email in manager_emails]
@@ -757,6 +743,7 @@ def admin_dashboard():
         audit_can_send=audit_can_send,
         audit_sender_display=audit_sender_display,
         audit_recipients_display=audit_recipients_display,
+        user_dashboard_stats=user_dashboard_stats,
     )
 
 
@@ -809,14 +796,7 @@ def admin_user_meetings(user_email):
             )
 
             for meeting in meetings:
-                meeting["has_transcript"] = meeting_has_transcript_signal(
-                    meeting,
-                    all_recordings,
-                    delegated_client=None,
-                    app_client=client,
-                    signed_in_email="",
-                    viewed_user_id=user_id,
-                )
+                meeting["has_transcript"] = _match_recording(meeting, all_recordings)
 
     except Exception as e:
         error = f"Error fetching meetings for {user_email}: {str(e)}"

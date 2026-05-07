@@ -63,6 +63,20 @@ class GraphClient:
 
         return [e for e in events if e.get("isOnlineMeeting")]
 
+    def get_event(self, event_id):
+        """Fetch a single calendar event directly by its ID."""
+        resp = requests.get(
+            f"{self.base_url}/me/events/{event_id}",
+            headers=self.headers,
+            params={
+                "$select": "id,subject,start,end,attendees,onlineMeeting,organizer,isOnlineMeeting"
+            },
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
     def get_online_meeting_by_join_url(self, join_url):
         """Resolve a calendar event's join URL to an onlineMeeting object (delegated)."""
         params = {

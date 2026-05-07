@@ -152,9 +152,22 @@
         <!-- Tabs -->
         <ul class="nav nav-tabs mb-4" id="adminTabs" role="tablist">
             <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="audit-report-tab" data-bs-toggle="tab"
+                <button class="nav-link active" id="overview-tab" data-bs-toggle="tab"
+                        data-bs-target="#overview" type="button" role="tab">
+                    <i class="bi bi-grid-3x3-gap"></i> Overview
+                    <span class="badge bg-primary ms-1">{{ total_users }}</span>
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="individual-tab" data-bs-toggle="tab"
+                        data-bs-target="#individual" type="button" role="tab">
+                    <i class="bi bi-person-lines-fill"></i> Individual Data
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="audit-report-tab" data-bs-toggle="tab"
                         data-bs-target="#audit-report" type="button" role="tab">
-                    <i class="bi bi-file-earmark-bar-graph"></i> Audit report
+                    <i class="bi bi-file-earmark-bar-graph"></i> Audit Report
                     <span class="badge bg-dark ms-1">{{ audit_totals.users }}</span>
                 </button>
             </li>
@@ -191,8 +204,132 @@
 
         <div class="tab-content" id="adminTabContent">
 
-            <!-- ── Audit report (rolling window) ── -->
-            <div class="tab-pane fade show active" id="audit-report" role="tabpanel">
+            <!-- ── Overview Tab (default) ── -->
+            <div class="tab-pane fade show active" id="overview" role="tabpanel">
+
+                <div class="mb-3">
+                    <input type="text" id="overviewSearch" class="form-control"
+                           placeholder="Search by name or email...">
+                </div>
+
+                {% if user_dashboard_stats %}
+                <div class="card border-0 shadow-sm">
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0" id="overviewTable">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th class="ps-3" style="width:36px">#</th>
+                                        <th>Name / Email</th>
+                                        <th style="width:110px">Role</th>
+                                        <th class="text-center" style="width:90px">Logins</th>
+                                        <th class="text-center" style="width:110px">Last Login</th>
+                                        <th class="text-center" style="width:100px">Meetings</th>
+                                        <th class="text-center" style="width:90px">Sent</th>
+                                        <th class="text-center" style="width:90px">Pending</th>
+                                        <th style="width:160px">MOM Rate</th>
+                                        <th style="width:90px"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="overviewBody">
+                                    {% for u in user_dashboard_stats %}
+                                    {% set total = u.sent + u.pending %}
+                                    {% set pct = ((u.sent / total * 100) | int) if total > 0 else 0 %}
+                                    <tr class="overview-row"
+                                        data-name="{{ u.name | lower }}"
+                                        data-email="{{ u.email | lower }}">
+                                        <td class="ps-3 text-muted">{{ loop.index }}</td>
+                                        <td>
+                                            <div class="fw-semibold">{{ u.name or 'Unknown' }}</div>
+                                            <div class="text-muted small">{{ u.email }}</div>
+                                        </td>
+                                        <td>
+                                            {% if u.is_manager %}
+                                            <span class="badge bg-primary-subtle text-primary">Manager</span>
+                                            {% else %}
+                                            <span class="badge bg-secondary-subtle text-secondary">Employee</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-center">
+                                            <span class="badge bg-light text-dark border">{{ u.login_count }}</span>
+                                        </td>
+                                        <td class="text-center small text-muted">
+                                            {{ u.last_login.strftime('%Y-%m-%d') if u.last_login else '—' }}
+                                        </td>
+                                        <td class="text-center">
+                                            <span class="badge bg-info-subtle text-info fs-6 px-2">{{ u.meetings }}</span>
+                                        </td>
+                                        <td class="text-center">
+                                            <span class="badge bg-success-subtle text-success fs-6 px-2">{{ u.sent }}</span>
+                                        </td>
+                                        <td class="text-center">
+                                            {% if u.pending > 0 %}
+                                            <span class="badge bg-danger-subtle text-danger fs-6 px-2">{{ u.pending }}</span>
+                                            {% else %}
+                                            <span class="badge bg-success-subtle text-success fs-6 px-2">0</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            {% if total > 0 %}
+                                            <div class="d-flex align-items-center gap-2">
+                                                <div class="progress flex-grow-1" style="height:8px">
+                                                    <div class="progress-bar {{ 'bg-success' if pct == 100 else 'bg-primary' }}"
+                                                         style="width:{{ pct }}%"></div>
+                                                </div>
+                                                <small class="text-muted" style="width:32px">{{ pct }}%</small>
+                                            </div>
+                                            {% else %}
+                                            <small class="text-muted">No meetings</small>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            <a href="{{ url_for('main.admin_user_meetings', user_email=u.email) }}"
+                                               class="btn btn-sm btn-outline-primary">
+                                                <i class="bi bi-eye"></i> View
+                                            </a>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <div class="card border-0 shadow-sm">
+                    <div class="card-body text-center py-5 text-muted">
+                        <i class="bi bi-people display-4 d-block mb-2"></i>
+                        No employees have signed in yet.
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- ── Individual Data Tab ── -->
+            <div class="tab-pane fade" id="individual" role="tabpanel">
+                <div class="mb-3">
+                    <input type="text" class="form-control search-field" data-target="allUsersList"
+                           placeholder="Search by name or email...">
+                </div>
+
+                {% if not users %}
+                <div class="card border-0 shadow-sm">
+                    <div class="card-body text-center py-5 text-muted">
+                        <i class="bi bi-people display-4 d-block mb-2"></i>
+                        No employees have signed in yet.
+                    </div>
+                </div>
+                {% else %}
+                <div id="allUsersList">
+                    {% for user in users %}
+                        {{ user_card(user) }}
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- ── Audit Report (rolling window) ── -->
+            <div class="tab-pane fade" id="audit-report" role="tabpanel">
                 <div class="card border-0 shadow-sm mb-3">
                     <div class="card-header bg-white border-bottom py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
                         <div>
@@ -463,6 +600,17 @@
 
 {% block scripts %}
 <script>
+/* Overview table search */
+document.getElementById('overviewSearch').addEventListener('input', function () {
+    const q = this.value.toLowerCase();
+    document.querySelectorAll('#overviewBody .overview-row').forEach(function (row) {
+        const name = row.dataset.name || '';
+        const email = row.dataset.email || '';
+        row.style.display = (!q || name.includes(q) || email.includes(q)) ? '' : 'none';
+    });
+});
+
+/* User-card list search (Individual Data, Managers, Others tabs) */
 document.querySelectorAll('.search-field').forEach(function (input) {
     input.addEventListener('input', function () {
         const q = this.value.toLowerCase();
@@ -477,8 +625,17 @@ document.querySelectorAll('.search-field').forEach(function (input) {
     });
 });
 
-if (window.location.hash === '#audit-report') {
-    const tabBtn = document.querySelector('[data-bs-target="#audit-report"]');
+/* Restore tab from URL hash */
+const hashTabMap = {
+    '#audit-report': '[data-bs-target="#audit-report"]',
+    '#overview':     '[data-bs-target="#overview"]',
+    '#individual':   '[data-bs-target="#individual"]',
+    '#pending':      '[data-bs-target="#pending"]',
+    '#sent':         '[data-bs-target="#sent"]',
+};
+const hash = window.location.hash;
+if (hash && hashTabMap[hash]) {
+    const tabBtn = document.querySelector(hashTabMap[hash]);
     if (tabBtn && typeof bootstrap !== 'undefined') {
         new bootstrap.Tab(tabBtn).show();
     }

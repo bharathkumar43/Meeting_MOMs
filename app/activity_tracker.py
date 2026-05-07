@@ -163,6 +163,98 @@ def get_sent_moms():
     )
 
 
+def get_all_user_dashboard_stats():
+    """All-time per-user stats for the admin overview dashboard."""
+    manager_emails = {e.lower() for e in (Config.MANAGER_EMAILS or [])}
+    users = User.query.order_by(User.last_login.desc()).all()
+    if not users:
+        return []
+
+    # Distinct (user_id, subject, meeting_date) accessed — all time
+    access_subq = (
+        db.session.query(
+            MeetingAccess.user_id.label("uid"),
+            MeetingAccess.subject.label("subj"),
+            MeetingAccess.meeting_date.label("md"),
+        )
+        .distinct()
+        .subquery("access_subq")
+    )
+    meetings_counts = dict(
+        db.session.query(access_subq.c.uid, func.count())
+        .group_by(access_subq.c.uid)
+        .all()
+    )
+
+    # Distinct sent — all time
+    sent_subq = (
+        db.session.query(
+            MOMSent.user_id.label("uid"),
+            MOMSent.subject.label("subj"),
+            MOMSent.meeting_date.label("md"),
+        )
+        .distinct()
+        .subquery("sent_subq")
+    )
+    sent_counts = dict(
+        db.session.query(sent_subq.c.uid, func.count())
+        .group_by(sent_subq.c.uid)
+        .all()
+    )
+
+    # Pending = accessed but no matching sent row
+    acc_pend = (
+        db.session.query(
+            MeetingAccess.user_id.label("uid"),
+            MeetingAccess.subject.label("subj"),
+            MeetingAccess.meeting_date.label("md"),
+        )
+        .distinct()
+        .subquery("acc_pend")
+    )
+    snt_pend = (
+        db.session.query(
+            MOMSent.user_id.label("uid"),
+            MOMSent.subject.label("subj"),
+            MOMSent.meeting_date.label("md"),
+        )
+        .distinct()
+        .subquery("snt_pend")
+    )
+    pending_counts = dict(
+        db.session.query(acc_pend.c.uid, func.count())
+        .outerjoin(
+            snt_pend,
+            db.and_(
+                snt_pend.c.uid == acc_pend.c.uid,
+                snt_pend.c.subj == acc_pend.c.subj,
+                snt_pend.c.md == acc_pend.c.md,
+            ),
+        )
+        .filter(snt_pend.c.uid.is_(None))
+        .group_by(acc_pend.c.uid)
+        .all()
+    )
+
+    rows = []
+    for u in users:
+        uid = u.id
+        sent = sent_counts.get(uid, 0)
+        pending = pending_counts.get(uid, 0)
+        rows.append({
+            "name": u.name or "",
+            "email": u.email,
+            "is_manager": u.email.lower() in manager_emails,
+            "first_login": u.first_login,
+            "last_login": u.last_login,
+            "login_count": u.login_count,
+            "meetings": meetings_counts.get(uid, 0),
+            "sent": sent,
+            "pending": pending,
+        })
+    return rows
+
+
 def get_audit_rows(days: int = 7):
     """
     Rolling-window audit for users whose last_login falls within the window.
