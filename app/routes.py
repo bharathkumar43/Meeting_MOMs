@@ -23,7 +23,7 @@ from app.meeting_filter import (
     filter_customer_meetings, filter_by_subject,
     parse_vtt_transcript, transcript_to_readable,
 )
-from app.doc_generator import generate_mom_document
+from app.doc_generator import generate_mom_document, convert_docx_to_pdf
 from app.email_sender import send_mom_email
 from app.mom_generator import generate_mom_from_transcript
 from app.activity_tracker import (
@@ -576,18 +576,37 @@ def send_page():
 
     # Extract external attendee emails for pre-filling
     org_domain = Config.ORG_DOMAIN.lower()
-    external_emails = [
-        a["email"] for a in attendees
+    external_attendees = [
+        a for a in attendees
         if a.get("email") and not a["email"].lower().endswith(f"@{org_domain}")
     ]
+    external_emails = [a["email"] for a in external_attendees]
     primary_email = external_emails[0] if external_emails else ""
-    additional_emails = ", ".join(external_emails[1:]) if len(external_emails) > 1 else ""
+
+    # Resolve greeting name from the local part of the primary external email
+    # e.g. john.doe@example.com → "John"
+    if primary_email:
+        local_part = primary_email.split("@")[0]
+        first_token = re.split(r"[._\-]", local_part)[0]
+        greeting_name = first_token.capitalize() if first_token else "Customer"
+    else:
+        greeting_name = "Customer"
+
+    # Build CC list: remaining external attendees + default team addresses
+    cc_parts = external_emails[1:]
+    for default_addr in [Config.MOM_DEFAULT_DL_EMAIL, Config.MOM_DEFAULT_CC_EMAIL]:
+        if default_addr and default_addr not in cc_parts:
+            cc_parts.append(default_addr)
+    prefill_cc = ", ".join(cc_parts)
+
+    has_default_cc = bool(Config.MOM_DEFAULT_DL_EMAIL or Config.MOM_DEFAULT_CC_EMAIL)
 
     session["mom_doc"] = {
         "bytes_hex": doc_bytes.hex(),
         "meeting_subject": title,
         "meeting_date": meeting_date,
         "meeting_time": meeting_time,
+        "attendees": attendees,
     }
 
     return render_template(
@@ -600,7 +619,9 @@ def send_page():
         decision_count=len(decisions),
         sent_success=False,
         prefill_email=primary_email,
-        prefill_cc=additional_emails,
+        prefill_cc=prefill_cc,
+        has_default_cc=has_default_cc,
+        greeting_name=greeting_name,
     )
 
 
@@ -641,21 +662,65 @@ def send_email():
 
     to_email = request.form.get("to_email", "").strip()
     cc_emails = request.form.get("cc_emails", "").strip()
+    format_choice = request.form.get("format_choice", "docx")  # "docx" | "pdf" | "both"
+    greeting_name = request.form.get("greeting_name", "").strip() or "Customer"
 
-    all_emails = [e.strip() for e in (to_email + "," + cc_emails).split(",") if e.strip()]
-    if not all_emails:
+    to_list = [e.strip() for e in to_email.split(",") if e.strip()]
+    cc_list = [e.strip() for e in cc_emails.split(",") if e.strip()]
+
+    if not to_list:
         flash("Please provide at least one customer email address.", "warning")
         return redirect(url_for("main.send_page"))
 
     try:
         token = get_token()
         doc_bytes = bytes.fromhex(mom_data["bytes_hex"])
+
+        safe_title = "".join(
+            c if c.isalnum() or c in " -_" else "_"
+            for c in mom_data["meeting_subject"]
+        )
+        base_name = f"MOM_{safe_title}_{mom_data['meeting_date']}"
+
+        # Build MOM attachment(s) based on format selection
+        attachments = []
+        if format_choice in ("docx", "both"):
+            attachments.append({
+                "bytes": doc_bytes,
+                "filename": f"{base_name}.docx",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            })
+        if format_choice in ("pdf", "both"):
+            pdf_bytes = convert_docx_to_pdf(doc_bytes)
+            attachments.append({
+                "bytes": pdf_bytes,
+                "filename": f"{base_name}.pdf",
+                "content_type": "application/pdf",
+            })
+
+        # Append any extra file the user uploaded
+        extra_file = request.files.get("extra_attachment")
+        if extra_file and extra_file.filename:
+            extra_bytes = extra_file.read()
+            max_bytes = 20 * 1024 * 1024  # 20 MB
+            if len(extra_bytes) > max_bytes:
+                flash("Extra attachment exceeds the 20 MB size limit.", "warning")
+                return redirect(url_for("main.send_page"))
+            safe_extra_name = secure_filename(extra_file.filename)
+            attachments.append({
+                "bytes": extra_bytes,
+                "filename": safe_extra_name,
+                "content_type": extra_file.content_type or "application/octet-stream",
+            })
+
         filename, sent_list = send_mom_email(
             access_token=token,
-            to_emails=all_emails,
+            to_emails=to_list,
+            cc_emails=cc_list,
             meeting_title=mom_data["meeting_subject"],
             meeting_date=mom_data["meeting_date"],
-            doc_bytes=doc_bytes,
+            attachments=attachments,
+            greeting_name=greeting_name,
         )
 
         user = session.get("user", {})

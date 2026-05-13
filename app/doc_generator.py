@@ -1,6 +1,10 @@
 import io
+import logging
 import os
+import tempfile
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -256,3 +260,34 @@ def generate_mom_document(
     doc.save(buffer)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def convert_docx_to_pdf(doc_bytes: bytes) -> bytes:
+    """
+    Convert a DOCX byte string to PDF using Microsoft Word COM automation.
+    Requires Microsoft Word to be installed on Windows.
+    Raises RuntimeError if conversion fails.
+    """
+    try:
+        from docx2pdf import convert as _convert
+    except ImportError as exc:
+        raise RuntimeError("docx2pdf is not installed. Run: pip install docx2pdf") from exc
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = os.path.join(tmp_dir, "mom.docx")
+        pdf_path = os.path.join(tmp_dir, "mom.pdf")
+
+        with open(docx_path, "wb") as f:
+            f.write(doc_bytes)
+
+        try:
+            _convert(docx_path, pdf_path)
+        except Exception as exc:
+            logger.error("docx2pdf conversion failed: %s", exc)
+            raise RuntimeError(f"PDF conversion failed: {exc}") from exc
+
+        if not os.path.exists(pdf_path):
+            raise RuntimeError("PDF conversion produced no output file.")
+
+        with open(pdf_path, "rb") as f:
+            return f.read()

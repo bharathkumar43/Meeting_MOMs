@@ -163,41 +163,51 @@ class GraphClient:
             return None
         return resp.text
 
-    def send_email(self, to_emails, subject, body_html, attachment_bytes, filename):
+    def send_email(self, to_emails, subject, body_html, attachments, cc_emails=None):
         """
-        Send an email with a Word document attachment via Microsoft Graph.
-        to_emails can be a single string or a list of email strings.
+        Send an email with one or more file attachments via Microsoft Graph.
+
+        Args:
+            to_emails:   single string or list — appear in the To field
+            cc_emails:   single string or list — appear in the CC field (optional)
+            attachments: list of dicts with keys 'bytes', 'filename', 'content_type'
         """
         if isinstance(to_emails, str):
             to_emails = [to_emails]
+        if isinstance(cc_emails, str):
+            cc_emails = [e.strip() for e in cc_emails.split(",") if e.strip()]
+        cc_emails = cc_emails or []
 
-        recipients = [
-            {"emailAddress": {"address": addr.strip()}}
-            for addr in to_emails
-            if addr.strip()
+        def _recipients(addrs):
+            return [
+                {"emailAddress": {"address": addr.strip()}}
+                for addr in addrs
+                if addr.strip()
+            ]
+
+        graph_attachments = [
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": att["filename"],
+                "contentType": att["content_type"],
+                "contentBytes": base64.b64encode(att["bytes"]).decode("utf-8"),
+            }
+            for att in attachments
         ]
 
-        attachment_b64 = base64.b64encode(attachment_bytes).decode("utf-8")
-
-        payload = {
-            "message": {
-                "subject": subject,
-                "body": {
-                    "contentType": "HTML",
-                    "content": body_html,
-                },
-                "toRecipients": recipients,
-                "attachments": [
-                    {
-                        "@odata.type": "#microsoft.graph.fileAttachment",
-                        "name": filename,
-                        "contentType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        "contentBytes": attachment_b64,
-                    }
-                ],
+        message = {
+            "subject": subject,
+            "body": {
+                "contentType": "HTML",
+                "content": body_html,
             },
-            "saveToSentItems": "true",
+            "toRecipients": _recipients(to_emails),
+            "attachments": graph_attachments,
         }
+        if cc_emails:
+            message["ccRecipients"] = _recipients(cc_emails)
+
+        payload = {"message": message, "saveToSentItems": "true"}
 
         resp = requests.post(
             f"{self.base_url}/me/sendMail",

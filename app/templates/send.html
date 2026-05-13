@@ -49,14 +49,56 @@
                 <span class="fw-semibold"><i class="bi bi-envelope"></i> Send to Customer</span>
             </div>
             <div class="card-body">
-                <form method="POST" action="{{ url_for('main.send_email') }}" id="sendForm">
+                <form method="POST" action="{{ url_for('main.send_email') }}"
+                      id="sendForm" enctype="multipart/form-data">
+
+                    <!-- ── Email preview ── -->
+                    <div class="mb-4">
+                        <label class="form-label fw-semibold">
+                            <i class="bi bi-eye"></i> Email Preview
+                            <small class="text-muted fw-normal ms-1">— review and edit before sending</small>
+                        </label>
+                        <div class="border rounded p-3 bg-light" style="font-family: Calibri, sans-serif; font-size: 14px; line-height: 1.6;">
+                            <p class="mb-1 text-muted" style="font-size:12px;"><strong>Subject:</strong> Minutes of Meeting - {{ meeting_subject }} ({{ meeting_date }})</p>
+                            <hr class="my-2">
+                            <p class="mb-2">
+                                Dear <span id="greetingPreview" class="fw-semibold">{{ greeting_name }}</span>,
+                            </p>
+                            <p class="mb-2">Please find attached the Minutes of Meeting for the following session:</p>
+                            <table style="border-collapse:collapse; margin:8px 0; font-size:13px;">
+                                <tr>
+                                    <td style="padding:5px 12px;font-weight:bold;background:#f0f4f8;">Meeting</td>
+                                    <td style="padding:5px 12px;background:#f0f4f8;">{{ meeting_subject }}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding:5px 12px;font-weight:bold;">Date</td>
+                                    <td style="padding:5px 12px;">{{ meeting_date }}</td>
+                                </tr>
+                            </table>
+                            <p class="mb-2 mt-2">If you have any questions or need clarification on any points discussed, please don't hesitate to reach out.</p>
+                            <p class="mb-0">Best regards,<br>CloudFuze Migration Team</p>
+                        </div>
+                    </div>
+
+                    <!-- ── Greeting name (editable) ── -->
+                    <div class="mb-4">
+                        <label class="form-label fw-semibold">Customer Name <small class="text-muted fw-normal">(used in the greeting)</small></label>
+                        <input type="text" class="form-control" name="greeting_name" id="greetingName"
+                               value="{{ greeting_name }}" placeholder="Customer"
+                               style="max-width: 320px;">
+                        <div class="form-text">Auto-filled from the meeting attendee list. Edit if incorrect.</div>
+                    </div>
+
+                    <hr class="my-3">
+
+                    <!-- ── Recipient fields ── -->
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Customer Email Address</label>
-                        <input type="email" class="form-control" name="to_email"
+                        <input type="text" class="form-control" name="to_email"
                                value="{{ prefill_email or '' }}"
-                               placeholder="customer@example.com" required>
+                               placeholder="customer@example.com, another@example.com" required>
                         <div class="form-text">
-                            The MOM document will be sent as a Word attachment to this email address.
+                            The MOM document will be sent as an attachment to this email address.
                             {% if prefill_email %}
                             <span class="text-success"><i class="bi bi-check-circle"></i> Auto-filled from meeting attendees.</span>
                             {% endif %}
@@ -68,9 +110,72 @@
                         <input type="text" class="form-control" name="cc_emails"
                                value="{{ prefill_cc or '' }}"
                                placeholder="email1@example.com, email2@example.com">
-                        <div class="form-text">Comma-separated email addresses. All recipients receive the same MOM document.</div>
+                        <div class="form-text">
+                            Comma-separated email addresses. All recipients receive the same MOM document.
+                            {% if has_default_cc %}
+                            <span class="text-info"><i class="bi bi-info-circle"></i> Includes default team recipients — you can edit or remove them.</span>
+                            {% endif %}
+                        </div>
                     </div>
 
+                    <hr class="my-4">
+
+                    <!-- ── Send format ── -->
+                    <div class="mb-4">
+                        <label class="form-label fw-semibold">Send Format</label>
+                        <div class="d-flex flex-wrap gap-3 mt-1">
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="format_choice"
+                                       id="fmt_docx" value="docx" checked>
+                                <label class="form-check-label" for="fmt_docx">
+                                    <i class="bi bi-file-earmark-word text-primary"></i>
+                                    Word document (.docx)
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="format_choice"
+                                       id="fmt_pdf" value="pdf">
+                                <label class="form-check-label" for="fmt_pdf">
+                                    <i class="bi bi-file-earmark-pdf text-danger"></i>
+                                    PDF document (.pdf)
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="format_choice"
+                                       id="fmt_both" value="both">
+                                <label class="form-check-label" for="fmt_both">
+                                    <i class="bi bi-files text-secondary"></i>
+                                    Both (.docx + .pdf)
+                                </label>
+                            </div>
+                        </div>
+                        <div class="form-text">
+                            PDF conversion uses Microsoft Word — layout will match the Word document exactly.
+                        </div>
+                    </div>
+
+                    <hr class="my-4">
+
+                    <!-- ── Extra attachment ── -->
+                    <div class="mb-4">
+                        <label class="form-label fw-semibold">
+                            <i class="bi bi-paperclip"></i> Additional Attachment (optional)
+                        </label>
+                        <input class="form-control" type="file" name="extra_attachment"
+                               id="extraAttachment"
+                               accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.png,.jpg,.jpeg">
+                        <div class="form-text">
+                            Attach an extra file (proposal, pricing sheet, etc.) alongside the MOM.
+                            Maximum size: 20 MB.
+                        </div>
+                        <div id="attachmentPreview" class="mt-2 d-none">
+                            <span class="badge bg-light text-dark border" id="attachmentName"></span>
+                            <button type="button" class="btn btn-link btn-sm text-danger p-0 ms-1"
+                                    onclick="clearAttachment()">Remove</button>
+                        </div>
+                    </div>
+
+                    <!-- ── Actions ── -->
                     <div class="d-flex justify-content-between align-items-center mt-4">
                         <button type="button" class="btn btn-outline-secondary" onclick="history.back()">
                             <i class="bi bi-arrow-left"></i> Back to Builder
@@ -109,6 +214,29 @@ document.getElementById('sendForm').addEventListener('submit', function(e) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Sending...';
 });
+
+// Keep greeting preview in sync with the name field
+document.getElementById('greetingName').addEventListener('input', function() {
+    document.getElementById('greetingPreview').textContent = this.value.trim() || 'Customer';
+});
+
+// Show selected filename badge
+document.getElementById('extraAttachment').addEventListener('change', function() {
+    const preview = document.getElementById('attachmentPreview');
+    const nameEl = document.getElementById('attachmentName');
+    if (this.files && this.files[0]) {
+        nameEl.textContent = this.files[0].name;
+        preview.classList.remove('d-none');
+    } else {
+        preview.classList.add('d-none');
+    }
+});
+
+function clearAttachment() {
+    const input = document.getElementById('extraAttachment');
+    input.value = '';
+    document.getElementById('attachmentPreview').classList.add('d-none');
+}
 
 {% if sent_success %}
 const modal = new bootstrap.Modal(document.getElementById('successModal'));

@@ -52,6 +52,10 @@ class Config:
         if email.strip()
     ]
 
+    # Default CC recipients added to every MOM email (pre-filled, editable by sender)
+    MOM_DEFAULT_DL_EMAIL = os.getenv("MOM_DEFAULT_DL_EMAIL", "").strip()
+    MOM_DEFAULT_CC_EMAIL = os.getenv("MOM_DEFAULT_CC_EMAIL", "").strip()
+
     ZOOM_ACCOUNT_ID = os.getenv("ZOOM_ACCOUNT_ID", "")
     ZOOM_CLIENT_ID = os.getenv("ZOOM_CLIENT_ID", "")
     ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET", "")

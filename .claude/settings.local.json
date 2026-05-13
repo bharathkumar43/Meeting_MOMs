@@ -9,7 +9,12 @@
       "WebFetch(domain:developers.zoom.us)",
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\BharathTummaganti\\\\OneDrive - CloudFuze, Inc\\\\Documents\\\\Meeting_MOMs\" -Recurse -Force)",
       "Bash(Select-Object FullName, PSIsContainer)",
-      "Bash(Format-Table -AutoSize)"
+      "Bash(Format-Table -AutoSize)",
+      "Bash(pip install *)",
+      "Bash(python -c \"from docx2pdf import convert; print\\('docx2pdf OK'\\)\")",
+      "Bash(venv\\\\Scripts\\\\pip install *)",
+      "Bash(\"venv/Scripts/pip.exe\" install *)",
+      "Bash(\"c:\\\\Users\\\\BharathTummaganti\\\\OneDrive - CloudFuze, Inc\\\\Documents\\\\Meeting_MOMs\\\\venv\\\\Scripts\\\\python.exe\" -c \"import cairosvg; import docx2pdf; print\\('Both OK'\\)\")"
     ]
   }
 }
