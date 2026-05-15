@@ -12,7 +12,9 @@ RUN apt-get update && \
         libpangocairo-1.0-0 \
         libgdk-pixbuf-2.0-0 \
         libffi-dev \
-        shared-mime-info && \
+        shared-mime-info \
+        libreoffice-writer \
+        libreoffice-common && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

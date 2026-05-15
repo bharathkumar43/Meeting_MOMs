@@ -1,6 +1,8 @@
 import io
 import logging
 import os
+import platform
+import subprocess
 import tempfile
 from datetime import datetime
 
@@ -264,15 +266,9 @@ def generate_mom_document(
 
 def convert_docx_to_pdf(doc_bytes: bytes) -> bytes:
     """
-    Convert a DOCX byte string to PDF using Microsoft Word COM automation.
-    Requires Microsoft Word to be installed on Windows.
-    Raises RuntimeError if conversion fails.
+    Convert a DOCX byte string to PDF.
+    Uses LibreOffice on Linux, docx2pdf (Microsoft Word) on Windows.
     """
-    try:
-        from docx2pdf import convert as _convert
-    except ImportError as exc:
-        raise RuntimeError("docx2pdf is not installed. Run: pip install docx2pdf") from exc
-
     with tempfile.TemporaryDirectory() as tmp_dir:
         docx_path = os.path.join(tmp_dir, "mom.docx")
         pdf_path = os.path.join(tmp_dir, "mom.pdf")
@@ -280,14 +276,44 @@ def convert_docx_to_pdf(doc_bytes: bytes) -> bytes:
         with open(docx_path, "wb") as f:
             f.write(doc_bytes)
 
-        try:
-            _convert(docx_path, pdf_path)
-        except Exception as exc:
-            logger.error("docx2pdf conversion failed: %s", exc)
-            raise RuntimeError(f"PDF conversion failed: {exc}") from exc
+        if platform.system() == "Windows":
+            try:
+                from docx2pdf import convert as _convert
+            except ImportError as exc:
+                raise RuntimeError("docx2pdf is not installed. Run: pip install docx2pdf") from exc
+            try:
+                _convert(docx_path, pdf_path)
+            except Exception as exc:
+                logger.error("docx2pdf conversion failed: %s", exc)
+                raise RuntimeError(f"PDF conversion failed: {exc}") from exc
+        else:
+            # LibreOffice headless — works on Linux/Mac without Microsoft Word
+            libreoffice = _find_libreoffice()
+            if not libreoffice:
+                raise RuntimeError(
+                    "LibreOffice is not installed. Run: apt-get install -y libreoffice"
+                )
+            result = subprocess.run(
+                [libreoffice, "--headless", "--convert-to", "pdf", "--outdir", tmp_dir, docx_path],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                logger.error("LibreOffice conversion failed: %s", result.stderr)
+                raise RuntimeError(f"PDF conversion failed: {result.stderr}")
 
         if not os.path.exists(pdf_path):
             raise RuntimeError("PDF conversion produced no output file.")
 
         with open(pdf_path, "rb") as f:
             return f.read()
+
+
+def _find_libreoffice() -> str | None:
+    """Return the LibreOffice executable path, or None if not found."""
+    for candidate in ("libreoffice", "soffice"):
+        result = subprocess.run(["which", candidate], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    return None

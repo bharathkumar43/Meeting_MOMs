@@ -662,7 +662,7 @@ def send_email():
 
     to_email = request.form.get("to_email", "").strip()
     cc_emails = request.form.get("cc_emails", "").strip()
-    format_choice = request.form.get("format_choice", "docx")  # "docx" | "pdf" | "both"
+    format_choice = request.form.get("format_choice", "docx")  # "docx" | "pdf"
     greeting_name = request.form.get("greeting_name", "").strip() or "Customer"
 
     to_list = [e.strip() for e in to_email.split(",") if e.strip()]
@@ -682,20 +682,20 @@ def send_email():
         )
         base_name = f"MOM_{safe_title}_{mom_data['meeting_date']}"
 
-        # Build MOM attachment(s) based on format selection
+        # Build MOM attachment based on format selection
         attachments = []
-        if format_choice in ("docx", "both"):
-            attachments.append({
-                "bytes": doc_bytes,
-                "filename": f"{base_name}.docx",
-                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            })
-        if format_choice in ("pdf", "both"):
+        if format_choice == "pdf":
             pdf_bytes = convert_docx_to_pdf(doc_bytes)
             attachments.append({
                 "bytes": pdf_bytes,
                 "filename": f"{base_name}.pdf",
                 "content_type": "application/pdf",
+            })
+        else:
+            attachments.append({
+                "bytes": doc_bytes,
+                "filename": f"{base_name}.docx",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             })
 
         # Append any extra file the user uploaded
