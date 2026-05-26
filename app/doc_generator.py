@@ -85,10 +85,8 @@ def generate_mom_document(
     meeting_title,
     meeting_date,
     meeting_time,
-    duration,
     attendees,
-    summary,
-    discussion_points,
+    tldr,
     action_items,
     decisions,
     transcript_text="",
@@ -126,7 +124,7 @@ def generate_mom_document(
     _add_horizontal_line(doc)
 
     # -- Meeting Details Table --
-    table = doc.add_table(rows=4, cols=2)
+    table = doc.add_table(rows=3, cols=2)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.style = "Light Grid Accent 1"
 
@@ -134,7 +132,6 @@ def generate_mom_document(
         ("Meeting Title", meeting_title),
         ("Date", meeting_date),
         ("Time", meeting_time),
-        ("Duration", duration),
     ]
 
     for i, (label, value) in enumerate(details):
@@ -180,19 +177,13 @@ def generate_mom_document(
     heading = doc.add_heading("Summary", level=2)
     for run in heading.runs:
         run.font.color.rgb = RGBColor(43, 87, 154)
-    doc.add_paragraph(summary or "No summary provided.")
 
-    # -- Discussion Points Section --
-    heading = doc.add_heading("Discussion Points", level=2)
-    for run in heading.runs:
-        run.font.color.rgb = RGBColor(43, 87, 154)
-
-    if discussion_points:
-        for point in discussion_points:
+    if tldr:
+        for point in tldr:
             para = doc.add_paragraph(style="List Bullet")
             para.add_run(point)
     else:
-        doc.add_paragraph("No discussion points recorded.")
+        doc.add_paragraph("No summary provided.")
 
     # -- Action Items Section --
     heading = doc.add_heading("Action Items", level=2)

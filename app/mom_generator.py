@@ -27,12 +27,11 @@ Meeting subject: {meeting_subject}
 Transcript:
 {transcript}
 
-Return ONLY a valid JSON object (no markdown fences, no explanation) with exactly these four keys:
+Return ONLY a valid JSON object (no markdown fences, no explanation) with exactly these three keys:
 
 {{
-  "summary": "<2-4 sentence overview of what was discussed and the main outcomes>",
-  "discussion_points": [
-    "<concise statement of a key topic discussed>"
+  "tldr": [
+    "<key outcome — one crisp sentence>"
   ],
   "action_items": [
     {{
@@ -47,7 +46,7 @@ Return ONLY a valid JSON object (no markdown fences, no explanation) with exactl
 }}
 
 Rules:
-- discussion_points: 3-8 items, each a single clear sentence
+- tldr: 2-3 items only — the most important outcome, the main decision reached, and the primary next step; each a single crisp sentence
 - action_items: only concrete tasks with a clear next step; omit vague ones
 - decisions: only firm agreements; omit tentative items
 - Return an empty list [] for any section with nothing relevant
@@ -95,8 +94,7 @@ Rules:
 
 def _empty() -> dict:
     return {
-        "summary": "",
-        "discussion_points": [],
+        "tldr": [],
         "action_items": [],
         "decisions": [],
     }
@@ -104,10 +102,8 @@ def _empty() -> dict:
 
 def _validate(data: dict) -> dict:
     result = _empty()
-    if isinstance(data.get("summary"), str):
-        result["summary"] = data["summary"]
-    if isinstance(data.get("discussion_points"), list):
-        result["discussion_points"] = [str(p) for p in data["discussion_points"] if p]
+    if isinstance(data.get("tldr"), list):
+        result["tldr"] = [str(p) for p in data["tldr"] if p]
     if isinstance(data.get("action_items"), list):
         for item in data["action_items"]:
             if isinstance(item, dict) and item.get("description"):

@@ -1,16 +1,16 @@
-let discussionCount = 1;
+let tldrCount = 1;
 let decisionCount = 1;
 
 function addField(type) {
-    if (type === 'discussion') {
-        discussionCount++;
-        const container = document.getElementById('discussionContainer');
+    if (type === 'tldr') {
+        tldrCount++;
+        const container = document.getElementById('tldrContainer');
         const div = document.createElement('div');
-        div.className = 'input-group mb-2 discussion-item';
+        div.className = 'input-group mb-2 tldr-item';
         div.innerHTML = `
-            <span class="input-group-text">${discussionCount}</span>
-            <input type="text" class="form-control" name="discussion_points"
-                   placeholder="Enter a discussion point...">
+            <span class="input-group-text">${tldrCount}</span>
+            <input type="text" class="form-control" name="tldr"
+                   placeholder="Enter a key outcome...">
             <button type="button" class="btn btn-outline-danger" onclick="removeField(this)">
                 <i class="bi bi-trash"></i>
             </button>
@@ -67,11 +67,11 @@ function removeField(btn) {
 }
 
 function renumberFields() {
-    document.querySelectorAll('#discussionContainer .discussion-item').forEach((item, idx) => {
+    document.querySelectorAll('#tldrContainer .tldr-item').forEach((item, idx) => {
         const badge = item.querySelector('.input-group-text');
         if (badge) badge.textContent = idx + 1;
     });
-    discussionCount = document.querySelectorAll('#discussionContainer .discussion-item').length;
+    tldrCount = document.querySelectorAll('#tldrContainer .tldr-item').length;
 
     document.querySelectorAll('#decisionContainer .decision-item').forEach((item, idx) => {
         const badge = item.querySelector('.input-group-text');

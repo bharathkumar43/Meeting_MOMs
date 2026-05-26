@@ -14,7 +14,12 @@
       "Bash(python -c \"from docx2pdf import convert; print\\('docx2pdf OK'\\)\")",
       "Bash(venv\\\\Scripts\\\\pip install *)",
       "Bash(\"venv/Scripts/pip.exe\" install *)",
-      "Bash(\"c:\\\\Users\\\\BharathTummaganti\\\\OneDrive - CloudFuze, Inc\\\\Documents\\\\Meeting_MOMs\\\\venv\\\\Scripts\\\\python.exe\" -c \"import cairosvg; import docx2pdf; print\\('Both OK'\\)\")"
+      "Bash(\"c:\\\\Users\\\\BharathTummaganti\\\\OneDrive - CloudFuze, Inc\\\\Documents\\\\Meeting_MOMs\\\\venv\\\\Scripts\\\\python.exe\" -c \"import cairosvg; import docx2pdf; print\\('Both OK'\\)\")",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\BharathTummaganti\\\\OneDrive - CloudFuze, Inc\\\\Documents\\\\Meeting_MOMs\" -Recurse -File)",
+      "Bash(Select-Object -First 30)",
+      "Bash(Format-Table FullName)",
+      "Bash(Get-ChildItem -Recurse -Name)",
+      "Bash(python -c ' *)"
     ]
   }
 }

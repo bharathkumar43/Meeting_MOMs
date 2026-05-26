@@ -518,8 +518,7 @@ def mom_builder():
         meeting_time=meeting_time,
         attendees_json=attendees_json,
         transcript=transcript,
-        ai_summary=mom["summary"],
-        ai_discussion_points=mom["discussion_points"],
+        ai_tldr=mom["tldr"],
         ai_action_items=mom["action_items"],
         ai_decisions=mom["decisions"],
     )
@@ -537,10 +536,7 @@ def send_page():
     transcript = request.form.get("transcript", "")
 
     title = request.form.get("title", meeting_subject)
-    duration = request.form.get("duration", "")
-    summary = request.form.get("summary", "")
-    discussion_points = request.form.getlist("discussion_points")
-    discussion_points = [p for p in discussion_points if p.strip()]
+    tldr = [p for p in request.form.getlist("tldr") if p.strip()]
 
     action_descs = request.form.getlist("action_desc")
     action_assignees = request.form.getlist("action_assignee")
@@ -565,10 +561,8 @@ def send_page():
         meeting_title=title,
         meeting_date=meeting_date,
         meeting_time=meeting_time,
-        duration=duration,
         attendees=attendees,
-        summary=summary,
-        discussion_points=discussion_points,
+        tldr=tldr,
         action_items=action_items,
         decisions=decisions,
         transcript_text=transcript if include_transcript else "",
@@ -614,7 +608,6 @@ def send_page():
         meeting_subject=title,
         meeting_date=meeting_date,
         meeting_time=meeting_time,
-        discussion_count=len(discussion_points),
         action_count=len(action_items),
         decision_count=len(decisions),
         sent_success=False,
@@ -742,7 +735,6 @@ def send_email():
             meeting_subject=mom_data["meeting_subject"],
             meeting_date=mom_data["meeting_date"],
             meeting_time=mom_data["meeting_time"],
-            discussion_count=0,
             action_count=0,
             decision_count=0,
             sent_success=True,
@@ -756,7 +748,6 @@ def send_email():
             meeting_subject=mom_data["meeting_subject"],
             meeting_date=mom_data["meeting_date"],
             meeting_time=mom_data["meeting_time"],
-            discussion_count=0,
             action_count=0,
             decision_count=0,
             sent_success=False,

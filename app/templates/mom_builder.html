@@ -15,7 +15,7 @@
 
         <div class="d-flex align-items-center gap-2 mb-1">
             <h3 class="fw-bold mb-0">Build Minutes of Meeting</h3>
-            {% if ai_summary or ai_discussion_points or ai_action_items or ai_decisions %}
+            {% if ai_tldr or ai_discussion_points or ai_action_items or ai_decisions %}
             <span class="badge bg-success-subtle text-success px-2 py-1">
                 <i class="bi bi-stars"></i> AI Generated
             </span>
@@ -47,40 +47,27 @@
                             <input type="date" class="form-control" name="date"
                                    value="{{ meeting_date }}" required>
                         </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Duration</label>
-                            <input type="text" class="form-control" name="duration"
-                                   placeholder="e.g. 45 minutes">
-                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Summary -->
-            <div class="card border-0 shadow-sm mb-4">
-                <div class="card-header bg-white border-bottom py-3">
-                    <span class="fw-semibold"><i class="bi bi-card-text"></i> Summary</span>
-                </div>
-                <div class="card-body">
-                    <textarea class="form-control" name="summary" rows="4"
-                              placeholder="Write a brief summary of the meeting...">{{ ai_summary }}</textarea>
-                </div>
-            </div>
-
-            <!-- Discussion Points -->
+            <!-- TL;DR -->
             <div class="card border-0 shadow-sm mb-4">
                 <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
-                    <span class="fw-semibold"><i class="bi bi-chat-dots"></i> Discussion Points</span>
-                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="addField('discussion')">
+                    <div>
+                        <span class="fw-semibold"><i class="bi bi-lightning-charge"></i> Summary</span>
+                        <small class="text-muted ms-2">2-3 key outcomes</small>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="addField('tldr')">
                         <i class="bi bi-plus"></i> Add Point
                     </button>
                 </div>
-                <div class="card-body" id="discussionContainer">
-                    {% if ai_discussion_points %}
-                        {% for point in ai_discussion_points %}
-                        <div class="input-group mb-2 discussion-item">
+                <div class="card-body" id="tldrContainer">
+                    {% if ai_tldr %}
+                        {% for point in ai_tldr %}
+                        <div class="input-group mb-2 tldr-item">
                             <span class="input-group-text">{{ loop.index }}</span>
-                            <input type="text" class="form-control" name="discussion_points"
+                            <input type="text" class="form-control" name="tldr"
                                    value="{{ point }}">
                             <button type="button" class="btn btn-outline-danger" onclick="removeField(this)">
                                 <i class="bi bi-trash"></i>
@@ -88,10 +75,10 @@
                         </div>
                         {% endfor %}
                     {% else %}
-                        <div class="input-group mb-2 discussion-item">
+                        <div class="input-group mb-2 tldr-item">
                             <span class="input-group-text">1</span>
-                            <input type="text" class="form-control" name="discussion_points"
-                                   placeholder="Enter a discussion point...">
+                            <input type="text" class="form-control" name="tldr"
+                                   placeholder="e.g. Migration to CloudFuze approved to start next week">
                             <button type="button" class="btn btn-outline-danger" onclick="removeField(this)">
                                 <i class="bi bi-trash"></i>
                             </button>
@@ -218,7 +205,7 @@
 <script src="{{ url_for('static', filename='js/mom_builder.js') }}"></script>
 <script>
 // Initialise counters based on server-rendered items
-discussionCount = document.querySelectorAll('#discussionContainer .discussion-item').length;
-decisionCount   = document.querySelectorAll('#decisionContainer .decision-item').length;
+tldrCount     = document.querySelectorAll('#tldrContainer .tldr-item').length;
+decisionCount = document.querySelectorAll('#decisionContainer .decision-item').length;
 </script>
 {% endblock %}
