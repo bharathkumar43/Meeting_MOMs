@@ -85,7 +85,6 @@ def generate_mom_document(
     meeting_title,
     meeting_date,
     meeting_time,
-    attendees,
     tldr,
     action_items,
     decisions,
@@ -143,33 +142,6 @@ def generate_mom_document(
         for paragraph in cell_label.paragraphs:
             for run in paragraph.runs:
                 run.bold = True
-
-    doc.add_paragraph()
-
-    # -- Attendees Section --
-    heading = doc.add_heading("Attendees", level=2)
-    for run in heading.runs:
-        run.font.color.rgb = RGBColor(43, 87, 154)
-
-    if attendees:
-        attendee_table = doc.add_table(rows=1, cols=3)
-        attendee_table.style = "Light Grid Accent 1"
-        hdr = attendee_table.rows[0]
-        hdr.cells[0].text = "#"
-        hdr.cells[1].text = "Name"
-        hdr.cells[2].text = "Email"
-        for cell in hdr.cells:
-            for paragraph in cell.paragraphs:
-                for run in paragraph.runs:
-                    run.bold = True
-
-        for idx, att in enumerate(attendees, 1):
-            row = attendee_table.add_row()
-            row.cells[0].text = str(idx)
-            row.cells[1].text = att.get("name", "")
-            row.cells[2].text = att.get("email", "")
-    else:
-        doc.add_paragraph("No attendee information available.")
 
     doc.add_paragraph()
 

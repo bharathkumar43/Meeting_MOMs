@@ -561,7 +561,6 @@ def send_page():
         meeting_title=title,
         meeting_date=meeting_date,
         meeting_time=meeting_time,
-        attendees=attendees,
         tldr=tldr,
         action_items=action_items,
         decisions=decisions,
