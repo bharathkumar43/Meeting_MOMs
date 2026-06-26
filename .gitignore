@@ -6,7 +6,10 @@ venv/
 .venv/
 *.docx
 .cursor/
-.claude/
 flask_session/
 *.db
 migrations/
+
+# Claude Code — personal overrides (never commit)
+CLAUDE.local.md
+.claude/settings.local.json

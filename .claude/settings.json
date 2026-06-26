@@ -1,0 +1,50 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(python *)",
+      "Bash(flask *)",
+      "Bash(docker *)",
+      "Bash(pytest *)",
+      "PowerShell(git *)",
+      "PowerShell(python *)",
+      "PowerShell(docker *)",
+      "WebSearch",
+      "WebFetch(domain:learn.microsoft.com)",
+      "WebFetch(domain:developers.zoom.us)",
+      "WebFetch(domain:platform.openai.com)",
+      "WebFetch(domain:flask.palletsprojects.com)",
+      "WebFetch(domain:docs.sqlalchemy.org)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(drop *)",
+      "Bash(curl * | bash)",
+      "Bash(* --no-verify)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/block-sensitive-writes.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post-edit-format.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
