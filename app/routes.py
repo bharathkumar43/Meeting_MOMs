@@ -1091,14 +1091,14 @@ def google_dashboard() -> str:
     explicitly_searched = bool(request.args.get("start_date") or request.args.get("end_date"))
 
     if not start_date:
-        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     if not end_date:
         end_date = datetime.now().strftime("%Y-%m-%d")
 
     meetings = None
 
     if explicitly_searched:
-        token = get_token(session)
+        token = get_token()
         if not token:
             flash("Your session has expired. Please sign in again.", "warning")
             return redirect(url_for("main.login"))
@@ -1143,7 +1143,7 @@ def google_transcript() -> str:
         flash("Missing message ID.", "warning")
         return redirect(url_for("main.google_dashboard"))
 
-    token = get_token(session)
+    token = get_token()
     if not token:
         flash("Your session has expired. Please sign in again.", "warning")
         return redirect(url_for("main.login"))
