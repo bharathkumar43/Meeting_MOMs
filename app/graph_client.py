@@ -261,6 +261,71 @@ class GraphClient:
         resp.raise_for_status()
         return True
 
+    # ── Google Meet email-based transcript methods ────────────
+
+    def search_google_meet_emails(self, from_date: str, to_date: str) -> list[dict]:
+        """
+        Search the signed-in user's mailbox for emails from Google Meet.
+        from_date / to_date are 'YYYY-MM-DD' strings.
+        Requires Mail.Read scope.
+        Returns list of message summary dicts (no body — call get_email_message for body).
+        """
+        time_min = f"{from_date}T00:00:00Z"
+        time_max = f"{to_date}T23:59:59Z"
+        odata_filter = (
+            f"from/emailAddress/address eq 'meet-recordings-noreply@google.com'"
+            f" and receivedDateTime ge {time_min}"
+            f" and receivedDateTime le {time_max}"
+        )
+        params = {
+            "$filter": odata_filter,
+            "$select": "id,subject,from,receivedDateTime,bodyPreview,toRecipients,ccRecipients",
+            "$orderby": "receivedDateTime desc",
+            "$top": 50,
+        }
+        try:
+            resp = requests.get(
+                f"{self.base_url}/me/messages",
+                headers=self.headers,
+                params=params,
+                timeout=15,
+            )
+            if resp.status_code == 403:
+                logger.warning(
+                    "search_google_meet_emails: 403 — Mail.Read scope may not be consented yet"
+                )
+                return []
+            resp.raise_for_status()
+            return resp.json().get("value", [])
+        except Exception as e:
+            logger.error("search_google_meet_emails failed: %s", e)
+            return []
+
+    def get_email_message(self, message_id: str) -> dict | None:
+        """
+        Fetch a single email message with its full HTML body.
+        GET /me/messages/{id}?$select=id,subject,from,receivedDateTime,body,toRecipients,ccRecipients
+        Requires Mail.Read scope.
+        Returns the message dict or None on failure.
+        """
+        try:
+            resp = requests.get(
+                f"{self.base_url}/me/messages/{message_id}",
+                headers=self.headers,
+                params={
+                    "$select": "id,subject,from,receivedDateTime,body,toRecipients,ccRecipients"
+                },
+                timeout=15,
+            )
+            if resp.status_code in (403, 404):
+                logger.warning("get_email_message %s: HTTP %d", message_id, resp.status_code)
+                return None
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("get_email_message failed for %s: %s", message_id, e)
+            return None
+
     # ── App-level methods (for admin monitoring) ─────────────
 
     def get_user_id(self, user_email):

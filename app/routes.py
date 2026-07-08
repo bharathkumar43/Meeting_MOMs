@@ -993,3 +993,192 @@ def zoom_transcript():
         attendees_json=json.dumps(attendees),
         error=None,
     )
+
+
+# ── Google Meetings (email-based, no Google OAuth needed) ─────────────────────
+
+
+def _extract_meeting_name(subject: str) -> str:
+    """Parse meeting name from Google Meet email subject like 'Transcript for: Name'."""
+    match = re.search(r"(?:transcript\s+for|recording\s+of)[:\s]+(.+)", subject, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return subject.strip()
+
+
+def _normalize_google_email(msg: dict) -> dict:
+    """Convert a Graph API email summary dict to the standard meeting dict."""
+    received = msg.get("receivedDateTime", "")
+    date_str = received[:10] if received else ""
+    time_str = received[:19].replace("Z", "") if received else ""
+
+    subject = _extract_meeting_name(msg.get("subject", "Google Meet"))
+
+    all_recipients = msg.get("toRecipients", []) + msg.get("ccRecipients", [])
+    attendees = [
+        {
+            "emailAddress": {
+                "name": r.get("emailAddress", {}).get("name", ""),
+                "address": r.get("emailAddress", {}).get("address", ""),
+            }
+        }
+        for r in all_recipients
+        if r.get("emailAddress", {}).get("address")
+    ]
+
+    return {
+        "id": f"google_email_{msg['id']}",
+        "subject": subject,
+        "start": {"dateTime": time_str},
+        "end": {"dateTime": ""},
+        "organizer": {
+            "emailAddress": {
+                "name": msg.get("from", {}).get("emailAddress", {}).get("name", "Google Meet"),
+                "address": msg.get("from", {}).get("emailAddress", {}).get("address", ""),
+            }
+        },
+        "attendees": attendees,
+        "external_attendees": [],
+        "has_transcript": True,
+        "source": "google",
+        "received_date": date_str,
+        "email_id": msg["id"],
+    }
+
+
+def _parse_google_meet_transcript(html_body: str) -> str:
+    """
+    Strip HTML from a Google Meet transcript email body and return
+    a 'Speaker: text' formatted transcript string.
+    """
+    # Remove script/style blocks
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html_body, flags=re.IGNORECASE | re.DOTALL)
+    # Replace <br> tags with newlines
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    # Replace block-closing tags with newlines
+    text = re.sub(r"</(p|div|tr|td|li|h[1-6])>", "\n", text, flags=re.IGNORECASE)
+    # Strip remaining HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Decode common HTML entities
+    text = (
+        text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
+        .replace("&#39;", "'")
+        .replace("&quot;", '"')
+    )
+    # Collapse excessive blank lines
+    lines = [line.strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+
+    # Try to detect "Name: text" speaker lines and return as-is
+    speaker_lines = [l for l in lines if re.match(r"^[A-Za-z][^:]{1,40}:\s+\S", l)]
+    if len(speaker_lines) >= 3:
+        return "\n".join(lines)
+
+    # Fallback: join all lines as a single block
+    return "\n".join(lines)
+
+
+@main_bp.route("/google/dashboard")
+@login_required
+def google_dashboard() -> str:
+    """Google Meet transcript emails dashboard — searchable by date range and keyword."""
+    start_date = request.args.get("start_date", "")
+    end_date = request.args.get("end_date", "")
+    keyword = request.args.get("keyword", "").strip().lower()
+    explicitly_searched = bool(request.args.get("start_date") or request.args.get("end_date"))
+
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    if not end_date:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+
+    meetings = None
+
+    if explicitly_searched:
+        token = get_token(session)
+        if not token:
+            flash("Your session has expired. Please sign in again.", "warning")
+            return redirect(url_for("main.login"))
+        try:
+            gc = GraphClient(token)
+            raw_emails = gc.search_google_meet_emails(start_date, end_date)
+            # Filter to emails whose subject contains "transcript"
+            transcript_emails = [
+                e for e in raw_emails
+                if "transcript" in e.get("subject", "").lower()
+            ]
+            # Apply optional keyword filter
+            if keyword:
+                transcript_emails = [
+                    e for e in transcript_emails
+                    if keyword in e.get("subject", "").lower()
+                ]
+            meetings = [_normalize_google_email(e) for e in transcript_emails]
+        except Exception:
+            logger.exception("google_dashboard email fetch failed")
+            flash("Error fetching Google Meet transcript emails. Please try again.", "danger")
+            meetings = []
+
+    return render_template(
+        "google_dashboard.html",
+        meetings=meetings,
+        start_date=start_date,
+        end_date=end_date,
+        keyword=request.args.get("keyword", ""),
+    )
+
+
+@main_bp.route("/google/transcript")
+@login_required
+def google_transcript() -> str:
+    """Fetch Google Meet transcript from email body and render transcript.html."""
+    user_data = session.get("user", {})
+    user_email = (user_data.get("preferred_username") or user_data.get("upn") or "").lower()
+
+    message_id = request.args.get("message_id", "")
+    if not message_id:
+        flash("Missing message ID.", "warning")
+        return redirect(url_for("main.google_dashboard"))
+
+    token = get_token(session)
+    if not token:
+        flash("Your session has expired. Please sign in again.", "warning")
+        return redirect(url_for("main.login"))
+
+    gc = GraphClient(token)
+    msg = gc.get_email_message(message_id)
+    if not msg:
+        flash("Could not retrieve the Google Meet transcript email.", "warning")
+        return redirect(url_for("main.google_dashboard"))
+
+    meeting = _normalize_google_email(msg)
+
+    html_body = msg.get("body", {}).get("content", "")
+    transcript_text = _parse_google_meet_transcript(html_body) if html_body else ""
+
+    error_msg = None if transcript_text.strip() else (
+        "No transcript content found in the email body."
+    )
+
+    attendees = [
+        {"name": a["emailAddress"]["name"], "email": a["emailAddress"]["address"]}
+        for a in meeting.get("attendees", [])
+    ]
+
+    if user_email:
+        record_meeting_access(
+            user_email,
+            meeting.get("subject", ""),
+            meeting.get("received_date", ""),
+        )
+
+    return render_template(
+        "transcript.html",
+        meeting=meeting,
+        transcript_text=transcript_text,
+        attendees_json=json.dumps(attendees),
+        error=error_msg,
+    )
