@@ -4,19 +4,16 @@
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-lg-10">
-        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+        <div class="d-flex justify-content-between align-items-center mb-4">
             <div>
                 <h3 class="fw-bold mb-1">
                     <i class="bi bi-google text-danger me-2"></i>Google Meetings
                 </h3>
-                <p class="text-muted mb-0">
-                    Searches your Outlook inbox for Google Meet transcript emails and generates
-                    Minutes of Meeting from the transcript content.
-                </p>
+                <p class="text-muted mb-0">Google Meet meetings from your Outlook calendar — select one to upload the transcript and generate MOM</p>
             </div>
         </div>
 
-        <!-- Search Filters -->
+        <!-- Filters -->
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-body">
                 <form method="GET" action="{{ url_for('main.google_dashboard') }}" class="row g-3 align-items-end">
@@ -49,9 +46,8 @@
         {% if meetings is none %}
         <div class="text-center py-5 text-muted">
             <i class="bi bi-google display-4 text-danger opacity-50"></i>
-            <p class="mt-3">Select a date range and click <strong>Search</strong> to find Google Meet transcript emails.</p>
-            <p class="small text-muted">Google Meet sends transcript emails from
-                <code>meet-recordings-noreply@google.com</code> to the meeting organizer.</p>
+            <p class="mt-3">Select a date range and click <strong>Search</strong> to load Google Meet meetings from your calendar.</p>
+            <p class="small">Any calendar invite containing a <code>meet.google.com</code> link will appear here.</p>
         </div>
 
         {% else %}
@@ -61,8 +57,9 @@
         <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
             <span class="fw-semibold">
                 <i class="bi bi-google text-danger me-1"></i>
-                {{ total_count }} Google Meet transcript{{ 's' if total_count != 1 }} found
+                {{ total_count }} Google Meet meeting{{ 's' if total_count != 1 }} found
             </span>
+            <span class="badge bg-danger-subtle text-danger">From your Outlook calendar</span>
         </div>
 
         <div class="card border-0 shadow-sm">
@@ -73,8 +70,8 @@
                         <thead class="table-light">
                             <tr>
                                 <th class="ps-4">Meeting</th>
-                                <th>Received</th>
-                                <th>Recipients</th>
+                                <th>Date &amp; Time</th>
+                                <th>External Attendees</th>
                                 <th class="text-end pe-4">Action</th>
                             </tr>
                         </thead>
@@ -86,36 +83,42 @@
                                         <span class="badge bg-danger-subtle text-danger">Google</span>
                                         <div>
                                             <div class="fw-semibold">{{ meeting.subject }}</div>
+                                            <small class="text-muted">
+                                                {{ meeting.organizer.emailAddress.address }}
+                                            </small>
                                         </div>
                                     </div>
                                 </td>
                                 <td>
                                     {% if meeting.start.dateTime %}
                                     <div>{{ meeting.start.dateTime[:10] }}</div>
-                                    <small class="text-muted">{{ meeting.start.dateTime[11:16] }}</small>
+                                    <small class="text-muted">
+                                        {{ meeting.start.dateTime[11:16] }}
+                                        {% if meeting.end.dateTime %} – {{ meeting.end.dateTime[11:16] }}{% endif %} UTC
+                                    </small>
                                     {% else %}
                                     <span class="text-muted">—</span>
                                     {% endif %}
                                 </td>
                                 <td>
-                                    {% for att in meeting.attendees[:3] %}
-                                    <span class="badge bg-secondary-subtle text-secondary me-1">
-                                        {{ att.emailAddress.name or att.emailAddress.address }}
+                                    {% for att in meeting.external_attendees[:3] %}
+                                    <span class="badge bg-danger-subtle text-danger me-1">
+                                        {{ att.name or att.email }}
                                     </span>
                                     {% endfor %}
-                                    {% if meeting.attendees|length > 3 %}
+                                    {% if meeting.external_attendees|length > 3 %}
                                     <span class="badge bg-secondary-subtle text-secondary">
-                                        +{{ meeting.attendees|length - 3 }} more
+                                        +{{ meeting.external_attendees|length - 3 }} more
                                     </span>
                                     {% endif %}
-                                    {% if not meeting.attendees %}
+                                    {% if not meeting.external_attendees %}
                                     <span class="text-muted small">—</span>
                                     {% endif %}
                                 </td>
                                 <td class="text-end pe-4">
-                                    <a href="{{ url_for('main.google_transcript', message_id=meeting.email_id) }}"
+                                    <a href="{{ url_for('main.google_transcript', event_id=meeting.id) }}"
                                        class="btn btn-sm btn-outline-danger">
-                                        <i class="bi bi-file-text"></i> View / Create MOM
+                                        <i class="bi bi-file-text"></i> Upload Transcript / Create MOM
                                     </a>
                                 </td>
                             </tr>
@@ -126,10 +129,9 @@
                 {% else %}
                 <div class="text-center py-5">
                     <i class="bi bi-google display-4 text-muted"></i>
-                    <p class="text-muted mt-3">No Google Meet transcript emails found for this date range.</p>
+                    <p class="text-muted mt-3">No Google Meet meetings found in your calendar for this date range.</p>
                     <p class="text-muted small">
-                        Google Meet sends transcript emails to the meeting organizer after the meeting ends,
-                        provided transcription is enabled in Google Meet settings.
+                        Only calendar invites that contain a <code>meet.google.com</code> link appear here.
                     </p>
                 </div>
                 {% endif %}

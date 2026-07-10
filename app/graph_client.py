@@ -261,7 +261,53 @@ class GraphClient:
         resp.raise_for_status()
         return True
 
-    # ── Google Meet email-based transcript methods ────────────
+    # ── Google Meet calendar + transcript methods ────────────────────────────────
+
+    def search_google_meet_events(self, start_date: str, end_date: str) -> list[dict]:
+        """
+        Fetch Outlook calendar events in the date range that contain a Google Meet link.
+        Checks location.displayName and body.content for meet.google.com URLs.
+        Returns raw calendar event dicts with an extra '_google_meet_code' key.
+        """
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Prefer": 'outlook.timezone="UTC"',
+        }
+        params = {
+            "startDateTime": f"{start_date}T00:00:00Z",
+            "endDateTime": f"{end_date}T23:59:59Z",
+            "$select": "id,subject,start,end,attendees,organizer,location,body",
+            "$orderby": "start/dateTime desc",
+            "$top": 100,
+        }
+        try:
+            resp = requests.get(
+                f"{self.base_url}/me/calendarView",
+                headers=headers,
+                params=params,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            events = resp.json().get("value", [])
+        except Exception as e:
+            logger.error("search_google_meet_events failed: %s", e)
+            return []
+
+        result = []
+        for event in events:
+            location = ((event.get("location") or {}).get("displayName") or "")
+            body_content = ((event.get("body") or {}).get("content") or "")
+            combined = location + " " + body_content
+            if "meet.google.com" not in combined:
+                continue
+            m = re.search(r"meet\.google\.com/([a-z]+-[a-z]+-[a-z]+)", combined)
+            event["_google_meet_code"] = m.group(1) if m else ""
+            result.append(event)
+
+        logger.info("search_google_meet_events: %d Google Meet events found", len(result))
+        return result
+
+    # ── Google Meet email-based transcript methods (legacy) ──────────────────
 
     def search_google_meet_emails(self, from_date: str, to_date: str) -> list[dict]:
         """

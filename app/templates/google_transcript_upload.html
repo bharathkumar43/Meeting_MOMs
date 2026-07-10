@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Upload Transcript – {{ meeting.subject }} - MOM Generator{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+
+        <!-- Back link -->
+        <a href="{{ url_for('main.google_dashboard') }}" class="btn btn-sm btn-outline-secondary mb-4">
+            <i class="bi bi-arrow-left me-1"></i>Back to Google Meetings
+        </a>
+
+        <!-- Meeting summary card -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-body">
+                <div class="d-flex align-items-start gap-3">
+                    <span class="badge bg-danger-subtle text-danger fs-6 px-3 py-2 mt-1">Google</span>
+                    <div>
+                        <h5 class="fw-bold mb-1">{{ meeting.subject }}</h5>
+                        <div class="text-muted small">
+                            {% if meeting.start.dateTime %}
+                            <i class="bi bi-calendar3 me-1"></i>
+                            {{ meeting.start.dateTime[:10] }}
+                            {% if meeting.start.dateTime[11:16] %}
+                            &nbsp;{{ meeting.start.dateTime[11:16] }}
+                            {% if meeting.end.dateTime %} – {{ meeting.end.dateTime[11:16] }}{% endif %} UTC
+                            {% endif %}
+                            {% endif %}
+                            {% if meeting.organizer.emailAddress.address %}
+                            &nbsp;&nbsp;<i class="bi bi-person me-1"></i>Organizer: {{ meeting.organizer.emailAddress.address }}
+                            {% endif %}
+                        </div>
+                        {% if attendees %}
+                        <div class="mt-2 d-flex flex-wrap gap-1">
+                            {% for att in attendees[:6] %}
+                            <span class="badge bg-secondary-subtle text-secondary">{{ att.name or att.email }}</span>
+                            {% endfor %}
+                            {% if attendees|length > 6 %}
+                            <span class="badge bg-secondary-subtle text-secondary">+{{ attendees|length - 6 }} more</span>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- How to get the transcript -->
+        <div class="alert alert-info d-flex gap-3 align-items-start mb-4">
+            <i class="bi bi-info-circle-fill fs-5 mt-1 flex-shrink-0"></i>
+            <div class="small">
+                <strong>How to get the transcript:</strong>
+                Ask the meeting organizer to share the transcript, or check
+                <strong>Google Meet → Activities → Transcripts</strong> if you have access.
+                Download as <strong>.vtt</strong> or <strong>.txt</strong>, or copy and paste the text below.
+            </div>
+        </div>
+
+        <!-- Transcript upload form -->
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-4">
+                <h6 class="fw-semibold mb-3">Provide Transcript</h6>
+
+                <form method="POST"
+                      action="{{ url_for('main.google_transcript') }}"
+                      enctype="multipart/form-data">
+
+                    <!-- Hidden meeting fields -->
+                    <input type="hidden" name="event_id" value="{{ meeting.id }}">
+                    <input type="hidden" name="subject" value="{{ meeting.subject }}">
+                    <input type="hidden" name="meeting_date" value="{{ meeting.start.dateTime[:10] if meeting.start.dateTime else '' }}">
+                    <input type="hidden" name="end_dt" value="{{ meeting.end.dateTime }}">
+                    <input type="hidden" name="organizer_name" value="{{ meeting.organizer.emailAddress.name }}">
+                    <input type="hidden" name="organizer_email" value="{{ meeting.organizer.emailAddress.address }}">
+                    <input type="hidden" name="attendees_json" value="{{ attendees_json }}">
+
+                    <!-- Transcript source toggle -->
+                    <div class="btn-group mb-3" role="group">
+                        <input type="radio" class="btn-check" name="transcript_source" id="src_paste" value="paste" checked>
+                        <label class="btn btn-outline-secondary btn-sm" for="src_paste">
+                            <i class="bi bi-clipboard me-1"></i>Paste text
+                        </label>
+                        <input type="radio" class="btn-check" name="transcript_source" id="src_file" value="file">
+                        <label class="btn btn-outline-secondary btn-sm" for="src_file">
+                            <i class="bi bi-upload me-1"></i>Upload file (.vtt / .txt)
+                        </label>
+                    </div>
+
+                    <!-- Paste area -->
+                    <div id="paste_area" class="mb-3">
+                        <textarea class="form-control font-monospace" name="transcript_text"
+                                  rows="16"
+                                  placeholder="Paste the Google Meet transcript here…
+
+Example:
+John Smith: Good morning everyone, thanks for joining today.
+Jane Doe: Thanks for the invite. We wanted to discuss the migration timeline.
+John Smith: Sure, let's start with the current blockers…"></textarea>
+                    </div>
+
+                    <!-- File upload area -->
+                    <div id="file_area" class="d-none mb-3">
+                        <div class="border rounded p-4 text-center bg-light">
+                            <i class="bi bi-file-earmark-text display-5 text-muted mb-2 d-block"></i>
+                            <label class="btn btn-outline-danger" for="transcript_file_input">
+                                <i class="bi bi-upload me-1"></i>Choose file
+                            </label>
+                            <input type="file" id="transcript_file_input" name="transcript_file"
+                                   accept=".vtt,.txt,.srt" class="d-none">
+                            <p class="text-muted small mt-2 mb-0">Supported: <strong>.vtt</strong>, <strong>.txt</strong></p>
+                            <p id="file_name_display" class="text-success small mt-1 mb-0 d-none"></p>
+                        </div>
+                    </div>
+
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-danger btn-lg">
+                            <i class="bi bi-file-text me-2"></i>Load Transcript &amp; Preview MOM
+                        </button>
+                    </div>
+
+                </form>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const radios = document.querySelectorAll('input[name="transcript_source"]');
+    const pasteArea = document.getElementById('paste_area');
+    const fileArea = document.getElementById('file_area');
+    const fileInput = document.getElementById('transcript_file_input');
+    const fileNameDisplay = document.getElementById('file_name_display');
+
+    radios.forEach(function (radio) {
+        radio.addEventListener('change', function () {
+            if (this.value === 'paste') {
+                pasteArea.classList.remove('d-none');
+                fileArea.classList.add('d-none');
+            } else {
+                pasteArea.classList.add('d-none');
+                fileArea.classList.remove('d-none');
+            }
+        });
+    });
+
+    fileInput.addEventListener('change', function () {
+        if (this.files.length > 0) {
+            fileNameDisplay.textContent = 'Selected: ' + this.files[0].name;
+            fileNameDisplay.classList.remove('d-none');
+        }
+    });
+}());
+</script>
+{% endblock %}
