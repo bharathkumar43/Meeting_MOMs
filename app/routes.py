@@ -279,47 +279,43 @@ def dashboard():
     end_date = request.args.get("end_date", "")
     keyword = request.args.get("keyword", "")
 
-    meetings = None
-    explicitly_searched = bool(request.args.get("start_date") or request.args.get("end_date"))
-
     if not start_date:
         start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     if not end_date:
         end_date = datetime.now().strftime("%Y-%m-%d")
 
-    if explicitly_searched:
-        try:
-            token = get_token()
-            client = GraphClient(token)
-            logger.info("Dashboard: fetching events from %s to %s", start_date, end_date)
-            events = client.list_calendar_events(start_date, end_date)
-            logger.info("Dashboard: got %d online meeting events", len(events))
+    meetings = []
+    try:
+        token = get_token()
+        client = GraphClient(token)
+        logger.info("Dashboard: fetching events from %s to %s", start_date, end_date)
+        events = client.list_calendar_events(start_date, end_date)
+        logger.info("Dashboard: got %d online meeting events", len(events))
 
-            meetings = filter_customer_meetings(events, Config.ORG_DOMAIN)
-            logger.info("Dashboard: %d customer meetings after filter", len(meetings))
+        meetings = filter_customer_meetings(events, Config.ORG_DOMAIN)
+        logger.info("Dashboard: %d customer meetings after filter", len(meetings))
 
-            if keyword:
-                keywords = [k.strip() for k in keyword.split(",")]
-                meetings = filter_by_subject(meetings, keywords)
+        if keyword:
+            keywords = [k.strip() for k in keyword.split(",")]
+            meetings = filter_by_subject(meetings, keywords)
 
-            app_token = get_app_token()
-            app_client = GraphClient(app_token) if app_token else None
+        app_token = get_app_token()
+        app_client = GraphClient(app_token) if app_token else None
 
-            all_recordings = []
-            if app_client:
-                user_profile = client.get_user_profile()
-                dashboard_user_id = user_profile.get("id", "")
-                if dashboard_user_id:
-                    all_recordings = app_client.build_recording_lookup(
-                        meetings, dashboard_user_id, Config.ORG_DOMAIN
-                    )
+        if app_client and meetings:
+            user_profile = client.get_user_profile()
+            dashboard_user_id = user_profile.get("id", "")
+            if dashboard_user_id:
+                file_lookup = app_client.build_file_lookup(
+                    meetings, dashboard_user_id, Config.ORG_DOMAIN
+                )
+                all_transcripts = file_lookup["transcripts"]
+                for meeting in meetings:
+                    meeting["has_transcript"] = _match_recording(meeting, all_transcripts)
 
-            for meeting in meetings:
-                meeting["has_transcript"] = _match_recording(meeting, all_recordings)
-
-        except Exception as e:
-            flash(f"Error fetching meetings: {str(e)}", "danger")
-            meetings = []
+    except Exception as e:
+        flash(f"Error fetching meetings: {str(e)}", "danger")
+        meetings = []
 
     return render_template(
         "dashboard.html",
@@ -337,6 +333,7 @@ def dashboard():
 def transcript():
     event_id = request.args.get("event_id", "")
     join_url = request.args.get("join_url", "")
+    back_url = request.args.get("back") or url_for("main.dashboard")
 
     token = get_token()
     client = GraphClient(token)
@@ -447,6 +444,68 @@ def transcript():
                 except Exception as e:
                     logger.warning("Step 2 FAILED via %s: %s", label, e)
 
+    # Step 3: Search OneDrive directly for the Teams transcript VTT/DOCX file.
+    # This fires when both API steps fail (common when app access policy isn't configured).
+    # Teams saves transcript files alongside the recording in the organizer's OneDrive.
+    if not transcript_text:
+        step3_token = get_app_token()
+        if step3_token:
+            step3_client = GraphClient(step3_token)
+            meeting_date_8 = (
+                meeting.get("start", {}).get("dateTime", "")[:10].replace("-", "")
+            )
+            meeting_subject = meeting.get("subject", "")
+
+            user_s3 = session.get("user", {})
+            signed_in_s3 = (
+                user_s3.get("preferred_username") or user_s3.get("upn") or ""
+            )
+            step3_targets = []
+            if organizer_email:
+                step3_targets.append(organizer_email)
+            if signed_in_s3 and signed_in_s3.lower() != (organizer_email or "").lower():
+                step3_targets.append(signed_in_s3)
+
+            for target_email in step3_targets:
+                if transcript_text:
+                    break
+                uid = step3_client._resolve_user_id_safe(target_email)
+                if not uid:
+                    logger.info("Step 3: Cannot resolve user %s", target_email)
+                    continue
+                logger.info("Step 3: Searching OneDrive transcripts for %s", target_email)
+                found_files = step3_client._search_user_transcripts(uid)
+                for tr in found_files:
+                    if tr["date"] != meeting_date_8:
+                        continue
+                    if not _subject_match(tr["subject"], meeting_subject):
+                        continue
+                    logger.info(
+                        "Step 3: Matched '%s' (%s), downloading item %s",
+                        tr["subject"], tr["ext"], tr["item_id"],
+                    )
+                    raw = step3_client.get_onedrive_file_content(uid, tr["item_id"])
+                    if not raw:
+                        continue
+                    if tr["ext"] == "vtt":
+                        content = _decode_bytes(raw)
+                        entries = parse_vtt_transcript(content)
+                        transcript_text = transcript_to_readable(entries)
+                    elif tr["ext"] == "docx":
+                        try:
+                            doc = Document(io.BytesIO(raw))
+                            transcript_text = "\n".join(
+                                p.text for p in doc.paragraphs if p.text.strip()
+                            )
+                        except Exception as docx_err:
+                            logger.warning("Step 3: DOCX parse error: %s", docx_err)
+                    if transcript_text:
+                        logger.info(
+                            "Step 3 SUCCESS via OneDrive for %s: %d chars",
+                            target_email, len(transcript_text),
+                        )
+                        break
+
     user = session.get("user", {})
     email = (user.get("preferred_username") or user.get("upn") or "").lower()
     if email:
@@ -462,6 +521,8 @@ def transcript():
         transcript_text=transcript_text,
         attendees_json=json.dumps(attendees),
         error=error,
+        back_url=back_url,
+        back_label="Customer Meetings",
     )
 
 
@@ -1002,6 +1063,28 @@ def zoom_transcript():
 
 
 # ── Google Meetings (calendar-based list + manual transcript upload) ──────────
+
+
+def _subject_match(file_subject: str, meeting_subject: str) -> bool:
+    """
+    Fuzzy-match an OneDrive filename subject to a calendar meeting subject.
+    Teams strips special chars (|, :, /) from filenames, so exact match rarely works.
+    """
+    def _norm(s: str) -> str:
+        s = re.sub(r"[^a-z0-9\s]", " ", s.lower())
+        return re.sub(r"\s+", " ", s).strip()
+
+    a = _norm(file_subject)
+    b = _norm(meeting_subject)
+    if not a or not b:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    words_a = set(a.split())
+    words_b = set(b.split())
+    common = words_a & words_b
+    shorter = min(len(words_a), len(words_b))
+    return shorter > 0 and len(common) / shorter >= 0.6
 
 
 def _decode_bytes(raw: bytes) -> str:

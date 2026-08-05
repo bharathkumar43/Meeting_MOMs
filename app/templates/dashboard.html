@@ -41,13 +41,6 @@
         </div>
 
         <!-- Results -->
-        {% if meetings is none %}
-        <div class="text-center py-5 text-muted">
-            <i class="bi bi-search display-4"></i>
-            <p class="mt-3">Select a date range and click <strong>Search</strong> to load your customer meetings.</p>
-        </div>
-        {% else %}
-
         {% set total_count = meetings|length %}
         {% set with_tx = meetings|selectattr('has_transcript', 'equalto', true)|list|length %}
 
@@ -65,7 +58,7 @@
                     {{ with_tx }} with transcript
                 </span>
                 <span class="badge bg-secondary-subtle text-secondary">
-                    {{ total_count - with_tx }} no transcript (manual)
+                    {{ total_count - with_tx }} manual
                 </span>
                 {% endif %}
             </div>
@@ -114,14 +107,14 @@
                                 </td>
                                 <td class="text-end pe-4">
                                     {% if meeting.has_transcript %}
-                                    <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=join_url) }}"
+                                    <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=join_url, back=request.url) }}"
                                        class="btn btn-sm btn-outline-primary">
                                         <i class="bi bi-file-text"></i> View Transcript
                                     </a>
                                     {% else %}
-                                    <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=join_url) }}"
+                                    <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=join_url, back=request.url) }}"
                                        class="btn btn-sm btn-outline-secondary">
-                                        <i class="bi bi-pencil-square"></i> Create MOM Manually
+                                        <i class="bi bi-pencil-square"></i> Create MOM
                                     </a>
                                     {% endif %}
                                 </td>
@@ -138,8 +131,6 @@
                 {% endif %}
             </div>
         </div>
-
-        {% endif %}
     </div>
 </div>
 {% endblock %}

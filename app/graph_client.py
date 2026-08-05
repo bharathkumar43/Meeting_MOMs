@@ -503,3 +503,122 @@ class GraphClient:
 
         logger.info("Recording lookup: found %d recording(s)", len(all_recordings))
         return all_recordings
+
+    def build_file_lookup(self, meetings, user_id: str, org_domain: str = "") -> dict:
+        """
+        Search OneDrives for both recording AND transcript files in a single thread pool.
+        Returns {"recordings": [...], "transcripts": [...]}.
+        Transcript entries have the same shape as recording entries (subject, date, time)
+        plus item_id and ext — so _match_recording() works on both lists.
+        """
+        if not org_domain:
+            org_domain = getattr(Config, "ORG_DOMAIN", "")
+
+        emails_seen: set = set()
+        user_ids_to_search: set = {user_id}
+
+        for m in meetings:
+            org_email = (
+                m.get("organizer", {}).get("emailAddress", {}).get("address", "")
+            ).lower()
+            if org_email and org_email.endswith(f"@{org_domain}") and org_email not in emails_seen:
+                emails_seen.add(org_email)
+                uid = self._resolve_user_id_safe(org_email)
+                if uid:
+                    user_ids_to_search.add(uid)
+
+        logger.info("File lookup: searching %d user(s)", len(user_ids_to_search))
+
+        tasks: list[tuple[str, str]] = []
+        for uid in user_ids_to_search:
+            tasks.append((uid, "recordings"))
+            tasks.append((uid, "transcripts"))
+
+        results: dict = {"recordings": [], "transcripts": []}
+        workers = min(len(tasks), 8)
+        with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
+            future_map = {}
+            for uid, ftype in tasks:
+                fn = self._search_user_recordings if ftype == "recordings" else self._search_user_transcripts
+                future_map[pool.submit(fn, uid)] = ftype
+            for future in as_completed(future_map):
+                results[future_map[future]].extend(future.result())
+
+        logger.info(
+            "File lookup: %d recording(s), %d transcript file(s)",
+            len(results["recordings"]), len(results["transcripts"]),
+        )
+        return results
+
+    def _search_user_transcripts(self, user_id: str) -> list[dict]:
+        """
+        Search a user's OneDrive for Teams transcript files with retry on 429.
+        Teams saves transcripts as: Subject-YYYYMMDD_HHMMSS-Transcript.vtt (or .docx)
+        Returns list of dicts: {subject, date, time, item_id, ext, user_id}.
+        """
+        for attempt in range(3):
+            try:
+                resp = requests.get(
+                    f"{self.base_url}/users/{user_id}/drive/root/search(q='Transcript')",
+                    headers=self.headers,
+                    params={"$select": "id,name,createdDateTime", "$top": 200},
+                )
+                if resp.status_code == 429:
+                    wait = _parse_retry_after(resp)
+                    logger.info("Rate limited transcript search for %s, retrying in %ds", user_id, wait)
+                    time.sleep(wait)
+                    continue
+                if resp.status_code != 200:
+                    logger.warning("_search_user_transcripts: HTTP %d for %s", resp.status_code, user_id)
+                    return []
+
+                transcripts = []
+                for f in resp.json().get("value", []):
+                    name = f.get("name", "")
+                    match = re.search(
+                        r"^(.+?)-(\d{8})_(\d{6})(?:UTC)?-Transcript\.",
+                        name,
+                        re.IGNORECASE,
+                    )
+                    if not match:
+                        continue
+                    ext = name.rsplit(".", 1)[-1].lower()
+                    if ext not in ("vtt", "docx"):
+                        continue
+                    transcripts.append({
+                        "subject": match.group(1).strip(),
+                        "date": match.group(2),
+                        "time": match.group(3),
+                        "item_id": f.get("id", ""),
+                        "ext": ext,
+                        "user_id": user_id,
+                    })
+                logger.info("_search_user_transcripts: %d file(s) for %s", len(transcripts), user_id)
+                return transcripts
+            except Exception as e:
+                logger.warning("OneDrive transcript search error for %s: %s", user_id, e)
+                return []
+        return []
+
+    def get_onedrive_file_content(self, user_id: str, item_id: str) -> bytes | None:
+        """
+        Download raw bytes of an OneDrive file by item ID using the app token.
+        Uses /users/{user_id}/drive/items/{item_id}/content (follows redirects).
+        """
+        try:
+            resp = requests.get(
+                f"{self.base_url}/users/{user_id}/drive/items/{item_id}/content",
+                headers=self.headers,
+                timeout=30,
+                allow_redirects=True,
+            )
+            if resp.status_code == 200:
+                return resp.content
+            logger.warning(
+                "get_onedrive_file_content: HTTP %d for user=%s item=%s",
+                resp.status_code, user_id, item_id,
+            )
+            return None
+        except Exception as e:
+            logger.error("get_onedrive_file_content failed for %s/%s: %s", user_id, item_id, e)
+            return None
