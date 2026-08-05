@@ -7,7 +7,11 @@
         <!-- Breadcrumb -->
         <nav aria-label="breadcrumb" class="mb-3">
             <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
+                <li class="breadcrumb-item">
+                    <a href="{{ back_url if back_url else url_for('main.dashboard') }}">
+                        {{ back_label if back_label else 'Dashboard' }}
+                    </a>
+                </li>
                 <li class="breadcrumb-item active">Transcript</li>
             </ol>
         </nav>
@@ -70,9 +74,15 @@
                         before proceeding to build the MOM document.
                     </p>
                     {% else %}
-                    <p class="text-muted small mb-3">
-                        Add your transcript or notes below, or use <strong>Upload transcript file</strong> above.
-                    </p>
+                    <div class="alert alert-info py-2 small mb-3">
+                        <i class="bi bi-info-circle me-1"></i>
+                        <strong>No transcript was loaded automatically.</strong>
+                        You can still create a MOM — either:
+                        <ul class="mb-0 mt-1">
+                            <li>Upload a transcript file using the button above (.vtt, .txt, .docx)</li>
+                            <li>Or type your own meeting notes below — the AI will generate the MOM from whatever you provide</li>
+                        </ul>
+                    </div>
                     {% endif %}
                     <textarea class="form-control font-monospace" name="transcript"
                               rows="20" id="transcriptArea"
@@ -81,8 +91,8 @@
             </div>
 
             <div class="d-flex justify-content-between">
-                <a href="{{ url_for('main.dashboard') }}" class="btn btn-outline-secondary">
-                    <i class="bi bi-arrow-left"></i> Back to Dashboard
+                <a href="{{ back_url if back_url else url_for('main.dashboard') }}" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-left"></i> Back to {{ back_label if back_label else 'Dashboard' }}
                 </a>
                 <button type="submit" class="btn btn-primary btn-lg">
                     Proceed to MOM Builder <i class="bi bi-arrow-right"></i>

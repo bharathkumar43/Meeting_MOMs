@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 from flask import (
     Blueprint, render_template, redirect, url_for,
-    request, session, flash, send_file, jsonify,
+    request, session, flash, send_file, jsonify, Response,
 )
 import io
 from docx import Document
@@ -37,6 +37,12 @@ from app.audit_report_email import send_daily_audit_report
 from config import Config
 
 main_bp = Blueprint("main", __name__)
+
+
+@main_bp.route("/favicon.ico")
+def favicon():
+    return Response(status=204)
+
 
 TRANSCRIPT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 ALLOWED_TRANSCRIPT_SUFFIXES = {".txt", ".vtt", ".docx"}
@@ -1107,72 +1113,10 @@ def google_dashboard():
     )
 
 
-@main_bp.route("/google/transcript", methods=["GET", "POST"])
+@main_bp.route("/google/transcript")
 @login_required
 def google_transcript():
-    """
-    GET: Show transcript upload/paste form pre-filled with calendar meeting details.
-    POST: Process the transcript and render transcript.html for MOM generation.
-    """
-    if request.method == "POST":
-        user_data = session.get("user", {})
-        user_email = (user_data.get("preferred_username") or user_data.get("upn") or "").lower()
-
-        subject = request.form.get("subject", "").strip() or "Google Meet"
-        meeting_date = request.form.get("meeting_date", "").strip()
-        end_dt = request.form.get("end_dt", "").strip()
-
-        try:
-            attendees = json.loads(request.form.get("attendees_json", "[]"))
-        except Exception:
-            attendees = []
-
-        # File upload takes priority over pasted text
-        transcript_text = ""
-        uploaded_file = request.files.get("transcript_file")
-        if uploaded_file and uploaded_file.filename:
-            raw_bytes = uploaded_file.read()
-            file_content = _decode_bytes(raw_bytes)
-            filename = secure_filename(uploaded_file.filename).lower()
-            if filename.endswith(".vtt"):
-                entries = parse_vtt_transcript(file_content)
-                transcript_text = transcript_to_readable(entries)
-            else:
-                transcript_text = file_content
-        else:
-            transcript_text = request.form.get("transcript_text", "").strip()
-
-        meeting = {
-            "id": request.form.get("event_id", f"google_{meeting_date}"),
-            "subject": subject,
-            "start": {"dateTime": f"{meeting_date}T00:00:00" if meeting_date else ""},
-            "end": {"dateTime": end_dt},
-            "organizer": {"emailAddress": {
-                "name": request.form.get("organizer_name", ""),
-                "address": request.form.get("organizer_email", ""),
-            }},
-            "attendees": [
-                {"emailAddress": {"name": a.get("name", ""), "address": a.get("email", "")}}
-                for a in attendees
-            ],
-            "external_attendees": [],
-            "has_transcript": bool(transcript_text),
-            "source": "google",
-        }
-
-        if user_email:
-            record_meeting_access(user_email, subject, meeting_date)
-
-        error_msg = None if transcript_text.strip() else "No transcript content provided."
-
-        return render_template(
-            "transcript.html",
-            meeting=meeting,
-            transcript_text=transcript_text,
-            attendees_json=json.dumps(attendees),
-            error=error_msg,
-        )
-
+    """Fetch meeting details from Outlook calendar, try to auto-load transcript email, render transcript.html."""
     # GET — fetch meeting details from calendar, then try to auto-find transcript email
     event_id = request.args.get("event_id", "")
     meeting = None
@@ -1230,25 +1174,18 @@ def google_transcript():
         flash("Could not load meeting details.", "warning")
         return redirect(url_for("main.google_dashboard"))
 
-    # Transcript found in email — render directly like Teams/Zoom
-    if auto_loaded:
-        user_data = session.get("user", {})
-        user_email = (user_data.get("preferred_username") or user_data.get("upn") or "").lower()
-        if user_email:
-            record_meeting_access(user_email, meeting["subject"], meeting["start"]["dateTime"][:10])
-        return render_template(
-            "transcript.html",
-            meeting=meeting,
-            transcript_text=transcript_text,
-            attendees_json=json.dumps(attendees),
-            error=None,
-        )
+    user_data = session.get("user", {})
+    user_email = (user_data.get("preferred_username") or user_data.get("upn") or "").lower()
+    if user_email:
+        record_meeting_access(user_email, meeting["subject"], meeting["start"]["dateTime"][:10])
 
-    # No transcript email found — show upload/paste form
+    # Render transcript.html directly — user can type notes or upload a file even if no auto-transcript
     return render_template(
-        "google_transcript_upload.html",
+        "transcript.html",
         meeting=meeting,
-        attendees=attendees,
+        transcript_text=transcript_text,
         attendees_json=json.dumps(attendees),
-        auto_loaded=False,
+        error=None,
+        back_url=url_for("main.google_dashboard"),
+        back_label="Google Meetings",
     )
