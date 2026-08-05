@@ -1008,6 +1008,20 @@ def _decode_bytes(raw: bytes) -> str:
     return raw.decode("latin-1", errors="replace")
 
 
+def _parse_google_meet_transcript(html_body: str) -> str:
+    """Strip HTML from a Google Meet transcript email and return plain 'Speaker: text' lines."""
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html_body, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</(p|div|tr|td|li|h[1-6])>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = (
+        text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        .replace("&nbsp;", " ").replace("&#39;", "'").replace("&quot;", '"')
+    )
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return "\n".join(lines)
+
+
 def _normalize_google_calendar_event(event: dict) -> dict:
     """Convert an Outlook calendar event (with Google Meet link) to the standard meeting dict."""
     from config import Config as _Config
@@ -1055,37 +1069,34 @@ def _normalize_google_calendar_event(event: dict) -> dict:
 @main_bp.route("/google/dashboard")
 @login_required
 def google_dashboard():
-    """Google Meet meetings dashboard — pulled from Outlook calendar, searchable by date range."""
+    """Google Meet meetings dashboard — auto-loads from Outlook calendar for the selected date range."""
     start_date = request.args.get("start_date", "")
     end_date = request.args.get("end_date", "")
     keyword = request.args.get("keyword", "").strip().lower()
-    explicitly_searched = bool(request.args.get("start_date") or request.args.get("end_date"))
 
     if not start_date:
         start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     if not end_date:
         end_date = datetime.now().strftime("%Y-%m-%d")
 
-    meetings = None
+    token = get_token()
+    if not token:
+        flash("Your session has expired. Please sign in again.", "warning")
+        return redirect(url_for("main.login"))
 
-    if explicitly_searched:
-        token = get_token()
-        if not token:
-            flash("Your session has expired. Please sign in again.", "warning")
-            return redirect(url_for("main.login"))
-        try:
-            gc = GraphClient(token)
-            raw_events = gc.search_google_meet_events(start_date, end_date)
-            if keyword:
-                raw_events = [
-                    e for e in raw_events
-                    if keyword in (e.get("subject") or "").lower()
-                ]
-            meetings = [_normalize_google_calendar_event(e) for e in raw_events]
-        except Exception:
-            logger.exception("google_dashboard calendar fetch failed")
-            flash("Error fetching Google Meet events from calendar. Please try again.", "danger")
-            meetings = []
+    meetings = []
+    try:
+        gc = GraphClient(token)
+        raw_events = gc.search_google_meet_events(start_date, end_date)
+        if keyword:
+            raw_events = [
+                e for e in raw_events
+                if keyword in (e.get("subject") or "").lower()
+            ]
+        meetings = [_normalize_google_calendar_event(e) for e in raw_events]
+    except Exception:
+        logger.exception("google_dashboard calendar fetch failed")
+        flash("Error fetching Google Meet events from calendar. Please try again.", "danger")
 
     return render_template(
         "google_dashboard.html",
@@ -1162,10 +1173,12 @@ def google_transcript():
             error=error_msg,
         )
 
-    # GET — fetch meeting details from calendar and show transcript upload form
+    # GET — fetch meeting details from calendar, then try to auto-find transcript email
     event_id = request.args.get("event_id", "")
     meeting = None
     attendees = []
+    transcript_text = ""
+    auto_loaded = False
 
     if event_id:
         token = get_token()
@@ -1180,16 +1193,62 @@ def google_transcript():
                         {"name": a["emailAddress"]["name"], "email": a["emailAddress"]["address"]}
                         for a in meeting.get("attendees", [])
                     ]
+
+                    # Try to find a matching transcript email in the user's Outlook inbox
+                    meeting_date = meeting["start"]["dateTime"][:10]
+                    if meeting_date:
+                        search_from = (
+                            datetime.strptime(meeting_date, "%Y-%m-%d") - timedelta(days=1)
+                        ).strftime("%Y-%m-%d")
+                        search_to = (
+                            datetime.strptime(meeting_date, "%Y-%m-%d") + timedelta(days=2)
+                        ).strftime("%Y-%m-%d")
+
+                        transcript_emails = gc.search_google_meet_emails(search_from, search_to)
+                        subject_lower = (meeting["subject"] or "").lower()
+                        subject_words = [w for w in subject_lower.split() if len(w) > 3]
+
+                        for email_msg in transcript_emails:
+                            email_subj = email_msg.get("subject", "").lower()
+                            if subject_lower and (
+                                subject_lower in email_subj
+                                or any(w in email_subj for w in subject_words)
+                            ):
+                                full_msg = gc.get_email_message(email_msg["id"])
+                                if full_msg:
+                                    html_body = (full_msg.get("body") or {}).get("content", "")
+                                    if html_body:
+                                        parsed = _parse_google_meet_transcript(html_body)
+                                        if parsed.strip():
+                                            transcript_text = parsed
+                                            auto_loaded = True
+                                            break
             except Exception:
-                logger.exception("google_transcript: failed to fetch calendar event")
+                logger.exception("google_transcript: failed to fetch calendar event or transcript email")
 
     if not meeting:
         flash("Could not load meeting details.", "warning")
         return redirect(url_for("main.google_dashboard"))
 
+    # Transcript found in email — render directly like Teams/Zoom
+    if auto_loaded:
+        user_data = session.get("user", {})
+        user_email = (user_data.get("preferred_username") or user_data.get("upn") or "").lower()
+        if user_email:
+            record_meeting_access(user_email, meeting["subject"], meeting["start"]["dateTime"][:10])
+        return render_template(
+            "transcript.html",
+            meeting=meeting,
+            transcript_text=transcript_text,
+            attendees_json=json.dumps(attendees),
+            error=None,
+        )
+
+    # No transcript email found — show upload/paste form
     return render_template(
         "google_transcript_upload.html",
         meeting=meeting,
         attendees=attendees,
         attendees_json=json.dumps(attendees),
+        auto_loaded=False,
     )
