@@ -26,3 +26,16 @@ metadata:
 ## psycopg2-binary pinned to ≥2.9.12
 **Decision:** psycopg2-binary==2.9.12 in requirements.txt.
 **Why:** Version 2.9.10 has no cp314 wheel for Python 3.14. 2.9.12 ships the first prebuilt cp314 wheel.
+
+## Google Meet added as a third meeting source
+**Decision:** `app/google_auth.py` (delegated OAuth2, session-stored tokens) + `app/google_client.py` (`GoogleMeetClient`, wrapping Calendar v3 + Meet v2) added alongside the existing Graph and Zoom integrations, following the same auth-module/client-module/normalize-to-shared-dict split.
+**Why:** Found already implemented in the codebase (routes `/google/dashboard`, `/google/transcript`, templates `google_dashboard.html`/`google_transcript_upload.html`) but undocumented in `CLAUDE.md`, `api-conventions.md`, and `security-reviewer.md` prior to this scaffold pass — those were updated to close the gap.
+**Files:** `app/google_auth.py`, `app/google_client.py`, `app/templates/google_dashboard.html`, `app/templates/google_transcript_upload.html`, `config.py` (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI`).
+
+## Claude Code project structure adopted alongside gstack (2026-08-14)
+**Decision:** Full `.claude/` scaffold (rules, commands, skills, agents, memory, workflows) documented per-project, with gstack (`~/.claude/skills/gstack`, installed globally per contributor) handling general-purpose review/QA/security/ship/deploy.
+**Why:** Reduce future token usage by letting Claude read `CLAUDE.md` + memory files first instead of scanning the repo, and avoid duplicating what gstack already does well.
+**Command rename:** the project's existing `.claude/commands/review.md` collided with gstack's reserved `/review` — renamed to `.claude/commands/team-review.md`. `deploy.md` was kept under its original name since it wraps project-specific Docker/Bootstrap-check logic that doesn't collide with gstack's `/land-and-deploy`.
+**Agent rename:** `.claude/agents/research.md` renamed to `.claude/agents/researcher.md` for consistency with the rest of the agent roster naming (no gstack collision — done for clarity, not required).
+**Rule rename:** `.claude/rules/pr.md` renamed to `.claude/rules/pr-standard.md` to match the target project structure; referenced from `.claude/skills/pr-description/SKILL.md`.
+**How to apply:** Any new project command/skill name must be checked against gstack's reserved list in `CLAUDE.md` before being added.

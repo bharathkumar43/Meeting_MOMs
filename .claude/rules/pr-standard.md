@@ -1,5 +1,7 @@
 # Pull Request Standards
 
+gstack's `/ship` opens the actual PR and `/land-and-deploy` handles merge + deploy orchestration. This file defines the project-specific format and checklist those commands should follow — see also `.claude/skills/pr-description/SKILL.md`.
+
 ## Branch Naming
 - `feature/<short-description>` — new functionality
 - `fix/<short-description>` — bug fixes

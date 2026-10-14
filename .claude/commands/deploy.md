@@ -1,5 +1,7 @@
 # /deploy — Deployment Checklist Command
 
+> Project-specific deploy logic (local Docker build/up on this machine). For merge + remote deploy orchestration, use gstack's `/land-and-deploy`; use `/canary` for staged rollout verification. This command is for a contributor building and running the stack locally or on the CloudFuze VPS via docker-compose.
+
 Walks through pre-deploy checks and runs Docker build.
 
 ## Usage

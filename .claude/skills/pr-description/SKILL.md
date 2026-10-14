@@ -1,17 +1,19 @@
 # Skill: PR Description
 
 ## Description
-Triggered when the user asks to write a PR description, create a pull request, or summarize changes for review. Reads `.claude/rules/pr.md` for format.
+Triggered when the user asks to write a PR description, create a pull request, or summarize changes for review. Reads `.claude/rules/pr-standard.md` for format.
+
+Note: gstack's `/ship` opens the actual PR. This skill is for drafting the description body in this project's specific template before handing off to `/ship`.
 
 ## What this skill does
 1. Runs `git log origin/main..HEAD --oneline` to list commits in the PR.
 2. Runs `git diff origin/main...HEAD --stat` for changed files.
 3. Reads the changed files to understand what actually changed.
-4. Drafts a PR title (≤70 chars) and description using the project template from `pr.md`.
+4. Drafts a PR title (≤70 chars) and description using the project template from `pr-standard.md`.
 5. Fills in the test checklist based on what was changed.
 
 ## Output
-Produces a ready-to-paste PR description following the template in `.claude/rules/pr.md`.
+Produces a ready-to-paste PR description following the template in `.claude/rules/pr-standard.md`.
 
 ## Project-specific checklist items always included
 - [ ] No CDN links introduced
