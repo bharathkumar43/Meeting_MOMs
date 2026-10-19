@@ -57,4 +57,10 @@ def create_app():
     with app.app_context():
         db.create_all()
 
+    from app.meeting_sync import start_background_sync
+
+    @app.before_request
+    def _start_meeting_sync():
+        start_background_sync(app)
+
     return app

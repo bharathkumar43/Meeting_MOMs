@@ -1,22 +1,23 @@
 {# Shared UI macros. Import with: {% import "_macros.html" as ui %} #}
 
 {#
-  Compact filter bar used by every meetings list.
+  Filter bar used by every meetings list: a search box plus a "Filters" button.
   - Search: filters loaded rows instantly (comma = OR); Enter also re-queries the server by subject.
-  - Date presets: reload the page with that range.
-  - Status (optional): client-side, rows need data-status="transcript|manual".
-  - "Filters" opens the hidden panel with a custom date range.
+  - Filters panel (collapsed): date range shortcuts (optionally "All") and custom From/To.
+  - The Filters badge shows when the date range differs from `default_preset`.
   `target` is the CSS selector of the table to filter; `url_args` carries extra route args.
 #}
 {% macro filter_bar(endpoint, start_date, end_date, keyword='', target='#meetingsTable',
                     show_status=True, url_args={}, placeholder='Search meetings, organizers or attendees…',
-                    loaded=True, show_video=False) %}
+                    loaded=True, show_video=False, include_all=False, default_preset='7 days') %}
 {% set today = date_presets.today %}
 {% set ns = namespace(preset=None) %}
+{% if include_all and loaded and not start_date and not end_date %}{% set ns.preset = 'All' %}{% endif %}
 {% for label, start in date_presets.presets %}
     {% if loaded and start_date == start and end_date == today %}{% set ns.preset = label %}{% endif %}
 {% endfor %}
 {% set custom_range = loaded and start_date and end_date and not ns.preset %}
+{% set non_default_range = loaded and ns.preset != default_preset %}
 
 <form class="filter-bar" method="GET" action="{{ url_for(endpoint, **url_args) }}"
       data-filter-root data-filter-target="{{ target }}" novalidate>
@@ -28,72 +29,58 @@
                    placeholder="{{ placeholder }}" autocomplete="off" data-filter-search>
         </label>
 
-        <div class="segmented" role="group" aria-label="Date range">
-            {% for label, start in date_presets.presets %}
-            <a class="seg-btn {{ 'active' if ns.preset == label }}"
-               href="{{ url_for(endpoint, start_date=start, end_date=today, keyword=keyword or None, **url_args) }}">{{ label }}</a>
-            {% endfor %}
-            {% if custom_range %}
-            <span class="seg-btn active"><i class="bi bi-calendar-range me-1"></i>Custom</span>
-            {% endif %}
-        </div>
-
-        {% if show_status %}
-        <div class="segmented" role="group" aria-label="Transcript status">
-            <button type="button" class="seg-btn active" data-status-filter="all">All</button>
-            <button type="button" class="seg-btn" data-status-filter="transcript">
-                <i class="bi bi-file-text me-1"></i>Transcript
-            </button>
-            <button type="button" class="seg-btn" data-status-filter="manual">Manual</button>
-            {% if show_video %}
-            <button type="button" class="seg-btn" data-status-filter="video">
-                <i class="bi bi-camera-reels me-1"></i>Video
-            </button>
-            {% endif %}
-        </div>
-        {% endif %}
-
         <button class="btn btn-light-outline filter-toggle" type="button" data-bs-toggle="collapse"
                 data-bs-target="#filterPanel" aria-expanded="false" aria-controls="filterPanel">
             <i class="bi bi-sliders"></i> Filters
-            {% if custom_range %}<span class="badge rounded-pill bg-primary">1</span>{% endif %}
+            <span class="badge rounded-pill bg-primary {{ '' if non_default_range else 'd-none' }}"
+                  data-filter-badge data-base="{{ 1 if non_default_range else 0 }}">1</span>
         </button>
     </div>
 
     <div class="collapse" id="filterPanel">
         <div class="filter-panel">
-            <div class="row g-3 align-items-end">
-                <div class="col-sm-6 col-lg-3">
-                    <label class="form-label" for="fStart">From</label>
+            <div class="filter-row">
+                <div class="segmented" role="group" aria-label="Date range">
+                    {% if include_all %}
+                    <a class="seg-btn {{ 'active' if ns.preset == 'All' }}"
+                       href="{{ url_for(endpoint, keyword=keyword or None, **url_args) }}">All</a>
+                    {% endif %}
+                    {% for label, start in date_presets.presets %}
+                    <a class="seg-btn {{ 'active' if ns.preset == label }}"
+                       href="{{ url_for(endpoint, start_date=start, end_date=today, keyword=keyword or None, **url_args) }}">{{ label }}</a>
+                    {% endfor %}
+                </div>
+
+                <div class="date-range">
+                    <label class="visually-hidden" for="fStart">From</label>
                     <input type="date" class="form-control" id="fStart" name="start_date"
                            value="{{ start_date }}" max="{{ today }}" data-date-start>
-                </div>
-                <div class="col-sm-6 col-lg-3">
-                    <label class="form-label" for="fEnd">To</label>
+                    <span class="date-sep">to</span>
+                    <label class="visually-hidden" for="fEnd">To</label>
                     <input type="date" class="form-control" id="fEnd" name="end_date"
                            value="{{ end_date }}" max="{{ today }}" data-date-end>
                     <div class="invalid-feedback">"To" must be on or after "From".</div>
                 </div>
-                <div class="col-lg-6 d-flex gap-2 justify-content-lg-end">
+
+                <div class="filter-actions">
                     <a class="btn btn-light-outline" href="{{ url_for(endpoint, **url_args) }}">Reset</a>
-                    <button type="submit" class="btn btn-primary px-4">
+                    <button type="submit" class="btn btn-primary">
                         <i class="bi bi-check2"></i> Apply
                     </button>
                 </div>
             </div>
-            <div class="form-text mt-2">
-                Tip: separate words with commas to match any of them, e.g. <em>Contoso, Kickoff</em>.
-                Press <kbd>/</kbd> to jump to search.
-            </div>
         </div>
     </div>
 
-    {% if custom_range or keyword %}
+    {% if non_default_range or keyword %}
     <div class="filter-chips">
-        {% if custom_range %}
+        {% if non_default_range %}
         <span class="filter-chip">
-            <i class="bi bi-calendar-range"></i> {{ start_date | nice_date }} &ndash; {{ end_date | nice_date }}
-            <a href="{{ url_for(endpoint, keyword=keyword or None, **url_args) }}" aria-label="Remove date range">
+            <i class="bi bi-calendar-range"></i>
+            {% if custom_range %}{{ start_date | nice_date }} &ndash; {{ end_date | nice_date }}
+            {% elif ns.preset in ('Today', 'All') %}{{ ns.preset }}
+            {% else %}Last {{ ns.preset }}{% endif %}
+            <a href="{{ url_for(endpoint, keyword=keyword or None, **url_args) }}" aria-label="Reset date range">
                 <i class="bi bi-x-lg"></i>
             </a>
         </span>
@@ -117,7 +104,7 @@
 {% macro results_meta(total, noun='meeting', extra='') %}
 <div class="results-meta">
     <span>
-        Showing <strong data-filter-count>{{ total }}</strong> of <strong>{{ total }}</strong>
+        Showing <strong data-filter-count>{{ total }}</strong> of <strong data-filter-total>{{ total }}</strong>
         {{ noun }}{{ 's' if total != 1 }}
     </span>
     {% if extra %}<span>{{ extra }}</span>{% endif %}

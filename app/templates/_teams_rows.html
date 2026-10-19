@@ -1,0 +1,38 @@
+{# Table rows for the Teams meetings list — used by the page and the "load older" endpoint. #}
+{% import "_macros.html" as ui with context %}
+{% set back = back_url or request.url %}
+{% for meeting in meetings %}
+{% set join_url = meeting.get('onlineMeeting', {}).get('joinUrl', '') %}
+{% set open_url = url_for('main.transcript', event_id=meeting.id, join_url=join_url, back=back) %}
+<tr data-search="{{ ui.search_text(meeting) }}"
+    data-href="{{ open_url }}" tabindex="0"
+    data-event-id="{{ meeting.id }}"
+    {% if not meeting.status_known %}data-pending{% endif %}
+    data-status="{{ 'transcript' if meeting.has_transcript else 'manual' }}"
+    data-video="{{ 'yes' if meeting.has_recording else 'no' }}">
+    <td>
+        <div class="meeting-cell">
+            <span class="source-icon source-teams"><i class="bi bi-microsoft-teams"></i></span>
+            <div>
+                <a class="row-link meeting-subject" href="{{ open_url }}">{{ meeting.subject }}</a>
+                <div class="meeting-sub">Organizer: {{ meeting.organizer.emailAddress.name or meeting.organizer.emailAddress.address }}</div>
+            </div>
+        </div>
+    </td>
+    <td>
+        <div class="date-main">{{ meeting.start.dateTime | nice_date }}</div>
+        <div class="date-sub">{{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC</div>
+    </td>
+    <td>{{ ui.attendee_chips(meeting.external_attendees) }}</td>
+    <td data-cell="transcript">
+        {% if not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
+        {% elif meeting.has_transcript %}<span class="status-pill status-ok">Available</span>
+        {% else %}<span class="status-pill status-manual">Manual</span>{% endif %}
+    </td>
+    <td data-cell="video">
+        {% if not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
+        {% elif meeting.has_recording %}<span class="status-pill status-sent">Available</span>
+        {% else %}<span class="text-muted small">&mdash;</span>{% endif %}
+    </td>
+</tr>
+{% endfor %}

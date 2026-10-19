@@ -7,13 +7,6 @@
 {% set lines = transcript_lines or [] %}
 {% set org = meeting.get('organizer', {}).get('emailAddress', {}) %}
 
-<nav aria-label="breadcrumb">
-    <ol class="breadcrumb">
-        <li class="breadcrumb-item"><a href="{{ back }}">{{ back_name }}</a></li>
-        <li class="breadcrumb-item active">Meeting</li>
-    </ol>
-</nav>
-
 <form method="POST" action="{{ url_for('main.mom_builder') }}">
     <input type="hidden" name="event_id" value="{{ meeting.id }}">
     <input type="hidden" name="meeting_subject" value="{{ meeting.subject }}">
@@ -21,88 +14,87 @@
     <input type="hidden" name="meeting_time" value="{{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC">
     <input type="hidden" name="attendees_json" value="{{ attendees_json }}">
 
-    <div class="page-header">
-        <div class="min-w-0">
+    <div class="meeting-head">
+        <a href="{{ back }}" class="btn-back" title="Back to {{ back_name }}" aria-label="Back to {{ back_name }}">
+            <i class="bi bi-arrow-left"></i>
+        </a>
+        <div class="min-w-0 flex-grow-1">
             <h1 class="page-title">{{ meeting.subject }}</h1>
-            <p class="page-subtitle">
-                {{ meeting.start.dateTime | nice_date }} &middot;
-                {{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC
-                {% if org.get('name') or org.get('address') %}&middot; {{ org.get('name') or org.get('address') }}{% endif %}
-            </p>
+            <div class="meeting-meta">
+                <span><i class="bi bi-calendar3"></i> {{ meeting.start.dateTime | nice_date }}</span>
+                <span><i class="bi bi-clock"></i> {{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC</span>
+                {% if org.get('name') or org.get('address') %}
+                <span><i class="bi bi-person"></i> {{ org.get('name') or org.get('address') }}</span>
+                {% endif %}
+            </div>
         </div>
-        <div class="page-actions">
-            <a href="{{ back }}" class="btn btn-light-outline"><i class="bi bi-arrow-left"></i> Back</a>
-            <button type="submit" class="btn btn-primary">
-                Create MOM <i class="bi bi-arrow-right"></i>
-            </button>
-        </div>
+        <button type="submit" class="btn btn-primary btn-create-mom">
+            <i class="bi bi-stars"></i> Create MOM
+        </button>
     </div>
 
-    <div class="row g-4">
-        {% if recording %}
-        <div class="col-xl-7">
-            <div class="card sticky-panel">
-                <video id="player" class="recording-player" controls preload="metadata" src="{{ recording.src }}">
-                    Your browser can't play this video.
-                </video>
-                <div class="card-body py-2 d-flex gap-3 small">
-                    <a href="{{ recording.download_url }}" download><i class="bi bi-download"></i> Download</a>
-                    {% if recording.web_url %}
-                    <a href="{{ recording.web_url }}" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right"></i> Open in Stream</a>
+    <!-- Recording -->
+    {% if recording %}
+    <div class="card mb-4" id="recordingCard">
+        <div class="card-header d-flex justify-content-between align-items-center gap-2">
+            <span class="card-title-text"><i class="bi bi-camera-reels text-primary"></i> Recording</span>
+            <a href="{{ recording.download_url }}" class="btn btn-sm btn-light-outline" download>
+                <i class="bi bi-download"></i> Download
+            </a>
+        </div>
+        <video id="player" class="recording-player" controls preload="metadata" src="{{ recording.src }}">
+            Your browser can't play this video.
+        </video>
+    </div>
+    {% endif %}
+
+    <!-- Transcript -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center gap-2">
+            <span class="card-title-text">
+                <i class="bi bi-chat-square-text text-primary"></i> Transcript
+                {% if lines %}<span class="badge rounded-pill bg-light text-muted border fw-normal">{{ lines | length }} lines</span>{% endif %}
+                <span class="status-pill status-sent d-none" id="editBadge">Edited</span>
+            </span>
+            <div class="d-flex gap-2">
+                {% if lines %}
+                <button type="button" class="btn btn-sm btn-light-outline" id="editToggle">
+                    <i class="bi bi-pencil"></i> Edit
+                </button>
+                {% endif %}
+                <label class="btn btn-sm btn-light-outline mb-0" for="transcriptFile" title="Upload .txt, .vtt or .docx (max 10 MB)">
+                    <i class="bi bi-upload"></i> Upload
+                </label>
+                <input type="file" class="d-none" id="transcriptFile"
+                       accept=".txt,.vtt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+            </div>
+        </div>
+
+        {% if lines %}
+        <div class="tx-list {{ 'tx-list-media' if recording }}" id="txList">
+            {% set ns = namespace(speaker=None) %}
+            {% for line in lines %}
+            <div class="tx-line {{ 'tx-seek' if recording }}" data-t="{{ line.start }}"
+                 {% if recording %}role="button" tabindex="0" title="Play from {{ line.clock }}"{% endif %}>
+                <span class="tx-time">{% if recording %}<i class="bi bi-play-fill"></i>{% endif %}{{ line.clock }}</span>
+                <div>
+                    {% if line.speaker != ns.speaker %}
+                    <div class="tx-speaker">{{ line.speaker }}</div>
+                    {% set ns.speaker = line.speaker %}
                     {% endif %}
+                    <div class="tx-text">{{ line.text }}</div>
                 </div>
             </div>
+            {% endfor %}
         </div>
         {% endif %}
 
-        <div class="{{ 'col-xl-5' if recording else 'col-12' }}">
-            <div class="card">
-                <div class="card-header d-flex justify-content-between align-items-center gap-2">
-                    <span class="card-title-text">
-                        <i class="bi bi-body-text text-primary"></i> Transcript
-                        <span class="status-pill status-sent d-none" id="editBadge">Edited</span>
-                    </span>
-                    <div class="d-flex gap-2">
-                        {% if lines %}
-                        <button type="button" class="btn btn-sm btn-light-outline" id="editToggle">
-                            <i class="bi bi-pencil"></i> Edit
-                        </button>
-                        {% endif %}
-                        <label class="btn btn-sm btn-light-outline mb-0" for="transcriptFile" title="Upload .txt, .vtt or .docx (max 10 MB)">
-                            <i class="bi bi-upload"></i> Upload
-                        </label>
-                        <input type="file" class="d-none" id="transcriptFile"
-                               accept=".txt,.vtt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-                    </div>
-                </div>
-
-                {% if lines %}
-                <div class="tx-list {{ 'tx-list-media' if recording }}" id="txList">
-                    {% set ns = namespace(speaker=None) %}
-                    {% for line in lines %}
-                    <div class="tx-line {{ 'tx-seek' if recording }}" data-t="{{ line.start }}"
-                         {% if recording %}role="button" tabindex="0" title="Play from {{ line.clock }}"{% endif %}>
-                        <span class="tx-time">{{ line.clock }}</span>
-                        <div>
-                            {% if line.speaker != ns.speaker %}
-                            <div class="tx-speaker">{{ line.speaker }}</div>
-                            {% set ns.speaker = line.speaker %}
-                            {% endif %}
-                            <div class="tx-text">{{ line.text }}</div>
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-                {% endif %}
-
-                <div class="card-body {{ 'd-none' if lines }}" id="editorWrap">
-                    <textarea class="form-control font-monospace transcript-editor" name="transcript"
-                              id="transcriptArea"
-                              placeholder="No transcript found for this meeting. Paste notes or a transcript here, or use Upload.">{{ transcript_text }}</textarea>
-                    <div id="uploadStatus" class="text-muted small mt-2"></div>
-                    <div id="uploadError" class="alert alert-danger mt-2 mb-0 d-none py-2 small"></div>
-                </div>
-            </div>
+        <div class="card-body {{ 'd-none' if lines }}" id="editorWrap">
+            <textarea class="form-control font-monospace transcript-editor" name="transcript"
+                      id="transcriptArea"
+                      placeholder="No transcript found for this meeting. Paste notes or a transcript here, or use Upload.">{{ transcript_text }}</textarea>
+            <div id="uploadStatus" class="text-muted small mt-2"></div>
+            <div id="uploadError" class="alert alert-danger mt-2 mb-0 d-none py-2 small"></div>
         </div>
     </div>
 </form>
@@ -184,6 +176,10 @@
     function seek(el) {
         player.currentTime = parseFloat(el.dataset.t) || 0;
         player.play().catch(function () {});
+        var r = player.getBoundingClientRect();
+        if (r.top < 0 || r.bottom > window.innerHeight) {
+            player.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
     }
     list.addEventListener('click', function (e) {
         var el = e.target.closest('.tx-line');

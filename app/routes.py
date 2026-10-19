@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -19,7 +18,14 @@ from werkzeug.utils import secure_filename
 
 from app.auth import get_auth_url, process_auth_callback, get_token, get_app_token, logout as auth_logout
 from app.graph_client import GraphClient
-from app.ttl_cache import TTLCache
+from app import db, meeting_sync
+from app.meeting_sync import (
+    candidate_user_ids as _app_user_ids_for_transcript_lookup,
+    find_recording as _find_recording,
+    lookup_meeting_media as _lookup_meeting_media,
+    record_media, record_to_meeting,
+)
+from app.models import MeetingRecord
 from app.zoom_auth import get_zoom_access_token
 from app.zoom_client import ZoomClient
 from app.meeting_filter import (
@@ -125,68 +131,9 @@ def _text_from_uploaded_docx(raw: bytes) -> str:
     return "\n".join(parts).strip()
 
 
-def _normalize_subject(s):
-    """Normalize a meeting subject for comparison.
-    Teams strips special chars like | from recording filenames, so we must
-    remove them and collapse whitespace for both sides to match."""
-    s = s.lower().strip()
-    s = re.sub(r'[|/\\:*?"<>]', ' ', s)
-    s = re.sub(r'\s+', ' ', s)
-    return s
-
-
-def _find_recording(meeting, all_recordings):
-    """Return the OneDrive file entry matching a calendar event (by date + subject), or None."""
-    if not all_recordings:
-        return None
-    meeting_start = meeting.get("start", {}).get("dateTime", "")
-    if not meeting_start:
-        return None
-    meeting_date = meeting_start[:10].replace("-", "")
-    norm_subject = _normalize_subject(meeting.get("subject", ""))
-    for rec in all_recordings:
-        if rec["date"] != meeting_date:
-            continue
-        norm_rec = _normalize_subject(rec["subject"])
-        if norm_rec == norm_subject or norm_rec in norm_subject or norm_subject in norm_rec:
-            return rec
-    return None
-
-
 def _match_recording(meeting, all_recordings):
     """Check if a calendar event has a matching recording file in OneDrive."""
     return _find_recording(meeting, all_recordings) is not None
-
-
-def _app_user_ids_for_transcript_lookup(app_client, meeting, signed_in_email="", viewed_user_id=None):
-    """Ordered Graph user IDs to try for app-only onlineMeeting + transcript lookup."""
-    ids = []
-    seen = set()
-
-    def add_uid(uid):
-        if uid and uid not in seen:
-            seen.add(uid)
-            ids.append(uid)
-
-    # The join link names the real organizer — the only option for channel meetings,
-    # whose calendar organizer is a group mailbox rather than a user.
-    add_uid(GraphClient.organizer_id_from_join_url(
-        (meeting.get("onlineMeeting") or {}).get("joinUrl", "")
-    ))
-
-    if viewed_user_id:
-        add_uid(viewed_user_id)
-
-    organizer_email = (
-        meeting.get("organizer", {}).get("emailAddress", {}).get("address", "") or ""
-    )
-    if organizer_email:
-        add_uid(app_client._resolve_user_id_safe(organizer_email))
-
-    if signed_in_email and signed_in_email.lower() != organizer_email.lower():
-        add_uid(app_client._resolve_user_id_safe(signed_in_email))
-
-    return ids
 
 
 def _graph_transcript_exists_app(app_client, join_url, user_ids):
@@ -247,118 +194,6 @@ def meeting_has_transcript_signal(
 
 
 _RECORDING_MAP_LIMIT = 300
-_ONEDRIVE_FALLBACK_BUDGET_SECONDS = 6
-
-# Calendar events the signed-in user's Teams page listed, keyed (email, event_id).
-# The status endpoint only answers for events in here, so a client can't probe others.
-_LISTED_MEETINGS = TTLCache(ttl_seconds=900)
-# Transcript/recording lookup results per calendar event (Graph via the app token).
-_MEDIA_CACHE = TTLCache(ttl_seconds=600)
-
-
-def _lookup_meeting_media(app_client, meeting, user_ids) -> dict:
-    """
-    Resolve the onlineMeeting via the first user ID that owns it, then report whether it has
-    transcripts and return its newest recording (recordings API) as a session-map entry.
-    """
-    result = {
-        "has_transcript": False, "recording": None, "user_id": None,
-        "online_meeting_id": None, "recording_api_ok": False,
-    }
-    join_url = (meeting.get("onlineMeeting") or {}).get("joinUrl", "")
-    if not join_url:
-        return result
-    for uid in user_ids:
-        try:
-            online_meeting = app_client.get_online_meeting_for_user(uid, join_url)
-            if not online_meeting:
-                continue
-            result["user_id"] = uid
-            result["online_meeting_id"] = online_meeting["id"]
-            result["has_transcript"] = bool(
-                app_client.list_transcripts(online_meeting["id"], user_id=uid)
-            )
-            recs = app_client.list_meeting_recordings(online_meeting["id"], uid)
-            result["recording_api_ok"] = recs is not None
-            if recs:
-                newest = max(recs, key=lambda r: r.get("createdDateTime", ""))
-                result["recording"] = {
-                    "kind": "api",
-                    "user_id": uid,
-                    "meeting_id": online_meeting["id"],
-                    "recording_id": newest.get("id", ""),
-                    "created": newest.get("createdDateTime", ""),
-                }
-            return result
-        except Exception as e:
-            logger.debug("Media lookup failed for uid=%s: %s", uid, e)
-    return result
-
-
-def _media_for_meetings(app_client, meetings, signed_in_user_id: str) -> dict:
-    """
-    {event_id: media result} for the given calendar events, using _MEDIA_CACHE.
-    Uncached events are looked up in parallel; events without an API recording get one
-    time-bounded OneDrive file search.
-    """
-    results = {m["id"]: _MEDIA_CACHE.get(m["id"]) for m in meetings}
-    todo = [m for m in meetings if results[m["id"]] is None]
-
-    if todo:
-        signed_in_email = _current_user_email()
-
-        def media(meeting) -> dict:
-            ids = _app_user_ids_for_transcript_lookup(
-                app_client, meeting, signed_in_email=signed_in_email
-            )
-            return _lookup_meeting_media(app_client, meeting, ids)
-
-        # Kept modest: Graph throttles (429) on bursts of parallel calls
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            fresh = list(pool.map(media, todo))
-
-        # OneDrive search only where the recordings API couldn't answer (e.g. permission not
-        # yet active); when it answered "none", that's authoritative.
-        missing = [
-            m for m, r in zip(todo, fresh) if not r["recording"] and not r["recording_api_ok"]
-        ]
-        files = []
-        if missing and signed_in_user_id:
-            try:
-                files = app_client.build_recording_lookup(
-                    missing, signed_in_user_id, Config.ORG_DOMAIN,
-                    budget_seconds=_ONEDRIVE_FALLBACK_BUDGET_SECONDS,
-                )
-            except Exception:
-                logger.exception("Recording lookup failed")
-
-        for meeting, result in zip(todo, fresh):
-            if not result["recording"]:
-                rec = _find_recording(meeting, files)
-                if rec and rec.get("item_id"):
-                    result["recording"] = {
-                        "kind": "onedrive", "user_id": rec["user_id"], "item_id": rec["item_id"],
-                    }
-            _MEDIA_CACHE.set(meeting["id"], result)
-            results[meeting["id"]] = result
-
-    # Deliberately no session writes here: status batches run concurrently and would
-    # overwrite each other's session. The meeting page records the playable entry.
-    return results
-
-
-_USER_IDS = TTLCache(ttl_seconds=3600)
-
-
-def _signed_in_graph_user_id(client) -> str:
-    """Signed-in user's Graph ID, cached server-side by email (no session write)."""
-    email = _current_user_email()
-    uid = _USER_IDS.get(email)
-    if not uid:
-        uid = client.get_user_profile().get("id", "")
-        if uid:
-            _USER_IDS.set(email, uid)
-    return uid
 
 
 def login_required(f):
@@ -452,88 +287,203 @@ def dashboard():
 
 # ── Teams Meetings ───────────────────────────────────────────
 
+_TEAMS_PAGE_SIZE = 50
+
+
+def _end_of_today_utc() -> datetime:
+    now = datetime.utcnow()
+    return datetime(now.year, now.month, now.day, 23, 59, 59)
+
+
+def _teams_query(owner_email: str, keyword: str, start: datetime | None = None,
+                 end: datetime | None = None):
+    """Stored customer meetings for one user, newest first, optional range + subject terms."""
+    q = MeetingRecord.query.filter(
+        MeetingRecord.owner_email == owner_email,
+        MeetingRecord.start_utc <= (end or _end_of_today_utc()),
+    )
+    if start:
+        q = q.filter(MeetingRecord.start_utc >= start)
+    terms = [t.strip() for t in (keyword or "").split(",") if t.strip()]
+    if terms:
+        def like(term: str):
+            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            return MeetingRecord.subject.ilike(f"%{escaped}%", escape="\\")
+        q = q.filter(db.or_(*[like(t) for t in terms]))
+    return q.order_by(MeetingRecord.start_utc.desc())
+
+
+def _history_complete(state) -> bool:
+    oldest = datetime.utcnow() - timedelta(days=meeting_sync.BACKFILL_DAYS)
+    return bool(state and state.synced_from and state.synced_from <= oldest + timedelta(days=1))
+
+
+@main_bp.app_template_filter("time_ago")
+def time_ago(value: datetime | None) -> str:
+    if not value:
+        return "never"
+    secs = int((datetime.utcnow() - value).total_seconds())
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{secs // 60} min ago"
+    if secs < 86400:
+        return f"{secs // 3600} h ago"
+    return value.strftime("%d %b %H:%M UTC")
+
+
 @main_bp.route("/meetings/teams")
 @login_required
 def teams_meetings():
+    """Teams customer meetings, read from the database (kept fresh by meeting_sync)."""
     start_date = request.args.get("start_date", "")
     end_date = request.args.get("end_date", "")
     keyword = request.args.get("keyword", "")
+    email = _current_user_email()
 
-    if not start_date:
-        start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    if not end_date:
-        end_date = datetime.now().strftime("%Y-%m-%d")
+    state = meeting_sync.get_sync_state(email)
+    if state is None or state.last_synced_at is None:
+        # First visit: pull the latest month now (calendar only, ~2 s); transcript/video
+        # status loads in the background on the page, history fills in as it's needed
+        try:
+            meeting_sync.sync_user(email, min_age=timedelta(0), media_limit=0, backfill=False)
+        except Exception:
+            logger.exception("Initial meeting sync failed for %s", email)
+        state = meeting_sync.get_sync_state(email)
+    if state and state.last_error:
+        flash("Couldn't refresh meetings from Microsoft just now; showing the last synced data.",
+              "warning")
 
-    meetings = []
+    all_mode = not start_date and not end_date
+    next_offset = None
     try:
-        token = get_token()
-        client = GraphClient(token)
-        logger.info("Dashboard: fetching events from %s to %s", start_date, end_date)
-        events = client.list_calendar_events(start_date, end_date)
-        logger.info("Dashboard: got %d online meeting events", len(events))
-
-        meetings = filter_customer_meetings(events, Config.ORG_DOMAIN)
-        logger.info("Dashboard: %d customer meetings after filter", len(meetings))
-
-        if keyword:
-            keywords = [k.strip() for k in keyword.split(",")]
-            meetings = filter_by_subject(meetings, keywords)
-
-        email = _current_user_email()
-        for meeting in meetings:
-            _LISTED_MEETINGS.set((email, meeting["id"]), meeting)
-            cached = _MEDIA_CACHE.get(meeting["id"])
-            meeting["status_known"] = cached is not None
-            meeting["has_transcript"] = bool(cached and cached["has_transcript"])
-            meeting["has_recording"] = bool(cached and cached["recording"])
-
-    except Exception:
-        logger.exception("teams_meetings calendar fetch failed")
-        flash("Error fetching meetings from Microsoft. Please try again.", "danger")
-        meetings = []
+        if all_mode:
+            rows = _teams_query(email, keyword).limit(_TEAMS_PAGE_SIZE + 1).all()
+            if len(rows) > _TEAMS_PAGE_SIZE or not _history_complete(state):
+                next_offset = min(len(rows), _TEAMS_PAGE_SIZE)
+            rows = rows[:_TEAMS_PAGE_SIZE]
+        else:
+            today = datetime.utcnow()
+            start = datetime.strptime(
+                start_date or (today - timedelta(days=7)).strftime("%Y-%m-%d"), "%Y-%m-%d"
+            )
+            end = datetime.strptime(end_date or today.strftime("%Y-%m-%d"), "%Y-%m-%d")
+            start_date, end_date = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+            if state and state.synced_from and start < state.synced_from:
+                meeting_sync.ensure_backfill(email, start)  # range older than stored history
+            rows = _teams_query(
+                email, keyword, start, end.replace(hour=23, minute=59, second=59)
+            ).all()
+    except ValueError:
+        flash("Invalid date range.", "warning")
+        return redirect(url_for("main.teams_meetings"))
 
     return render_template(
         "teams_meetings.html",
-        meetings=meetings,
-        start_date=start_date,
-        end_date=end_date,
+        meetings=[record_to_meeting(r) for r in rows],
+        start_date="" if all_mode else start_date,
+        end_date="" if all_mode else end_date,
         keyword=keyword,
+        all_mode=all_mode,
+        next_offset=next_offset,
+        last_synced_at=state.last_synced_at if state else None,
     )
+
+
+@main_bp.route("/meetings/teams/older")
+@login_required
+def teams_meetings_older():
+    """Next page of the "All" view (from the database; backfills history when it runs out)."""
+    keyword = request.args.get("keyword", "")
+    try:
+        offset = max(int(request.args.get("offset", "0")), 0)
+    except ValueError:
+        return jsonify({"status": "error", "message": "Invalid offset."}), 400
+    email = _current_user_email()
+
+    try:
+        rows = _teams_query(email, keyword).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
+        state = meeting_sync.get_sync_state(email)
+        # Ran out of stored meetings but history isn't complete: fetch older months now
+        while len(rows) <= _TEAMS_PAGE_SIZE and not _history_complete(state):
+            reached = state.synced_from if state and state.synced_from else datetime.utcnow()
+            oldest = datetime.utcnow() - timedelta(days=meeting_sync.BACKFILL_DAYS)
+            until = max(reached - timedelta(days=meeting_sync.BACKFILL_CHUNK_DAYS), oldest)
+            meeting_sync.ensure_backfill(email, until)
+            state = meeting_sync.get_sync_state(email)
+            rows = _teams_query(email, keyword).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
+    except Exception:
+        db.session.rollback()
+        logger.exception("teams_meetings_older failed")
+        return jsonify({"status": "error", "message": "Could not load older meetings."}), 502
+
+    has_more = len(rows) > _TEAMS_PAGE_SIZE
+    rows = rows[:_TEAMS_PAGE_SIZE]
+    return jsonify({"status": "ok", "data": {
+        "html": render_template(
+            "_teams_rows.html", meetings=[record_to_meeting(r) for r in rows],
+            back_url=url_for("main.teams_meetings"),
+        ),
+        "count": len(rows),
+        "next_offset": offset + len(rows) if has_more else None,
+    }}), 200
 
 
 @main_bp.route("/meetings/teams/status", methods=["POST"])
 @login_required
 def teams_meetings_status():
-    """Transcript/video availability for meetings the Teams page just listed (JSON)."""
+    """Transcript/video status for the user's own stored meetings; checks unchecked ones now."""
     if request.method != "POST" or not request.is_json:
         return jsonify({"status": "error", "message": "Expected JSON."}), 400
-    ids = request.get_json(silent=True, force=True) or {}
-    ids = [i for i in ids.get("ids", []) if isinstance(i, str)][:25]
-
+    payload = request.get_json(silent=True, force=True) or {}
+    ids = [i for i in payload.get("ids", []) if isinstance(i, str)][:25]
     email = _current_user_email()
-    meetings = [m for m in (_LISTED_MEETINGS.get((email, i)) for i in ids) if m]
-    if not meetings:
+    if not ids:
         return jsonify({"status": "ok", "data": {}}), 200
 
-    app_token = get_app_token()
-    if not app_token:
-        return jsonify({"status": "error", "message": "Status temporarily unavailable."}), 503
-    try:
-        client = GraphClient(get_token())
-        results = _media_for_meetings(
-            GraphClient(app_token), meetings, _signed_in_graph_user_id(client)
-        )
-    except Exception:
-        logger.exception("teams_meetings_status failed")
-        return jsonify({"status": "error", "message": "Could not check meetings."}), 502
+    # Only the signed-in user's own meetings (owner_email filter) are ever looked up
+    records = MeetingRecord.query.filter(
+        MeetingRecord.owner_email == email, MeetingRecord.event_id.in_(ids)
+    ).all()
+    unchecked = [r for r in records if r.has_transcript is None]
+    if unchecked:
+        app_token = get_app_token()
+        if not app_token:
+            return jsonify({"status": "error", "message": "Status temporarily unavailable."}), 503
+        try:
+            app_client = GraphClient(app_token)
+            meeting_sync.check_media(
+                app_client, unchecked, email, app_client._resolve_user_id_safe(email) or ""
+            )
+        except Exception:
+            db.session.rollback()
+            logger.exception("teams_meetings_status failed")
+            return jsonify({"status": "error", "message": "Could not check meetings."}), 502
 
     return jsonify({"status": "ok", "data": {
-        event_id: {
-            "transcript": bool(r and r["has_transcript"]),
-            "video": bool(r and r["recording"]),
-        }
-        for event_id, r in results.items()
+        r.event_id: {"transcript": bool(r.has_transcript), "video": bool(r.has_recording)}
+        for r in records if r.has_transcript is not None
     }}), 200
+
+
+@main_bp.route("/meetings/teams/sync", methods=["POST"])
+@login_required
+def teams_meetings_sync():
+    """Sync button: re-read the calendar now and re-check recent meetings (60 s cooldown)."""
+    if request.method != "POST":
+        return jsonify({"status": "error", "message": "POST required."}), 405
+    email = _current_user_email()
+    result = meeting_sync.sync_user(
+        email, min_age=meeting_sync.MANUAL_SYNC_COOLDOWN, media_limit=0,
+        backfill=False, recheck_recent=True,
+    )
+    if "skipped" in result:
+        return jsonify({"status": "ok", "data": {
+            "skipped": True, "message": "Already up to date (synced less than a minute ago).",
+        }}), 200
+    if "error" in result:
+        return jsonify({"status": "error", "message": "Sync failed. Please try again."}), 502
+    return jsonify({"status": "ok", "data": result}), 200
 
 
 # ── Transcript View ──────────────────────────────────────────
@@ -589,9 +539,10 @@ def transcript():
         len(meeting_join_url),
     )
 
-    # Step 0: the Teams list already resolved this meeting (owner + onlineMeeting ID) —
+    # Step 0: the stored record already knows this meeting's owner + onlineMeeting ID —
     # fetch the transcript directly instead of repeating the lookups below.
-    cached_media = _MEDIA_CACHE.get(meeting["id"])
+    stored = meeting_sync.get_record(_current_user_email(), meeting["id"])
+    cached_media = record_media(stored) if stored and stored.has_transcript is not None else None
     tried_app_lookup = False
     if cached_media is None and effective_join_url:
         # One shared lookup (owner, onlineMeeting, transcript, recording) for this page
@@ -604,9 +555,11 @@ def transcript():
                 )
                 cached_media = _lookup_meeting_media(lookup_client, meeting, ids0)
                 tried_app_lookup = True
-                if cached_media.get("online_meeting_id"):
-                    _MEDIA_CACHE.set(meeting["id"], cached_media)
+                if stored is not None and cached_media.get("online_meeting_id"):
+                    meeting_sync.save_media(stored, cached_media)
+                    db.session.commit()
             except Exception as e:
+                db.session.rollback()
                 logger.warning("Step 0 lookup failed: %s", e)
     skip_lookups = False
     if cached_media and cached_media.get("online_meeting_id"):
@@ -812,19 +765,22 @@ def transcript():
 def _recording_for_meeting(meeting, app_client) -> dict | None:
     """
     Playable recording for a calendar event the signed-in user owns, or None.
-    Uses the entry cached by the meetings list, else the recordings API. Only
-    recordings matched to this event are ever served (never a client-supplied ID).
+    Uses the stored record's lookup (the user's own MeetingRecord), else the recordings API.
+    Only recordings matched to this event are ever served (never a client-supplied ID).
     """
     recording_map = dict(session.get("recording_map", {}))
-    entry = recording_map.get(meeting["id"])
-    cached = _MEDIA_CACHE.get(meeting["id"])
-    if not entry and cached is not None:
-        # Already looked up (from the Teams list) — reuse, including "no recording"
-        entry = cached["recording"]
+    stored = meeting_sync.get_record(_current_user_email(), meeting["id"])
+    media = record_media(stored) if stored and stored.has_transcript is not None else None
+    entry = None
+    if media is not None:
+        # Already looked up and stored — reuse, including "no recording"
+        entry = media.get("recording")
         if entry:
             recording_map[meeting["id"]] = entry
-            session["recording_map"] = recording_map
-    elif not entry:
+            session["recording_map"] = dict(list(recording_map.items())[-_RECORDING_MAP_LIMIT:])
+    elif recording_map.get(meeting["id"]):
+        entry = recording_map[meeting["id"]]
+    else:
         try:
             ids = _app_user_ids_for_transcript_lookup(
                 app_client, meeting, signed_in_email=_current_user_email()

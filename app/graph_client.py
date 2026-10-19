@@ -18,6 +18,9 @@ _TIMEOUT = (5, 30)
 _LOOKUP_BUDGET_SECONDS = 25
 # Parallel OneDrive searches — kept low because bursts trigger Graph 429 throttling
 _LOOKUP_MAX_WORKERS = 3
+# calendarView paging: Graph returns one page per call; follow nextLink up to the cap
+_CALENDAR_PAGE_SIZE = 250
+_CALENDAR_MAX_EVENTS = 2000
 # Per-user OneDrive "Meeting Recording" search results; repeated lookups reuse them
 _RECORDING_SEARCH_CACHE = TTLCache(ttl_seconds=300)
 
@@ -70,6 +73,24 @@ class GraphClient:
         resp.raise_for_status()
         return resp.json()
 
+    def _calendar_view_all(self, url: str, params: dict, headers: dict,
+                           max_events: int = _CALENDAR_MAX_EVENTS) -> list[dict]:
+        """
+        GET a calendarView and follow @odata.nextLink pages (Graph returns at most one page
+        per call). Stops at max_events so a very large calendar can't stall the page.
+        """
+        events: list[dict] = []
+        next_url, next_params = url, {**params, "$top": _CALENDAR_PAGE_SIZE}
+        while next_url and len(events) < max_events:
+            resp = requests.get(next_url, headers=headers, params=next_params, timeout=_TIMEOUT)
+            resp.raise_for_status()
+            body = resp.json()
+            events.extend(body.get("value", []))
+            next_url, next_params = body.get("@odata.nextLink"), None  # nextLink carries params
+        if next_url:
+            logger.warning("calendarView truncated at %d events", len(events))
+        return events[:max_events]
+
     def list_calendar_events(self, start_date, end_date):
         """
         Fetch calendar events in a date range that are online meetings.
@@ -85,17 +106,8 @@ class GraphClient:
             "endDateTime": f"{end_date}T23:59:59Z",
             "$select": "id,subject,start,end,attendees,onlineMeeting,organizer,isOnlineMeeting",
             "$orderby": "start/dateTime desc",
-            "$top": 100,
         }
-        resp = requests.get(
-            f"{self.base_url}/me/calendarView",
-            headers=headers,
-            params=params,
-            timeout=_TIMEOUT,
-        )
-        resp.raise_for_status()
-        events = resp.json().get("value", [])
-
+        events = self._calendar_view_all(f"{self.base_url}/me/calendarView", params, headers)
         return [e for e in events if e.get("isOnlineMeeting")]
 
     def get_event(self, event_id):
@@ -367,17 +379,9 @@ class GraphClient:
             "endDateTime": f"{end_date}T23:59:59Z",
             "$select": "id,subject,start,end,attendees,organizer,location,body",
             "$orderby": "start/dateTime desc",
-            "$top": 100,
         }
         try:
-            resp = requests.get(
-                f"{self.base_url}/me/calendarView",
-                headers=headers,
-                params=params,
-                timeout=15,
-            )
-            resp.raise_for_status()
-            events = resp.json().get("value", [])
+            events = self._calendar_view_all(f"{self.base_url}/me/calendarView", params, headers)
         except Exception as e:
             logger.error("search_google_meet_events failed: %s", e)
             return []
@@ -485,16 +489,10 @@ class GraphClient:
             "endDateTime": f"{end_date}T23:59:59Z",
             "$select": "id,subject,start,end,attendees,onlineMeeting,organizer,isOnlineMeeting",
             "$orderby": "start/dateTime desc",
-            "$top": 100,
         }
-        resp = requests.get(
-            f"{self.base_url}/users/{user_id}/calendarView",
-            headers=headers,
-            params=params,
-            timeout=_TIMEOUT,
+        events = self._calendar_view_all(
+            f"{self.base_url}/users/{user_id}/calendarView", params, headers
         )
-        resp.raise_for_status()
-        events = resp.json().get("value", [])
         return [e for e in events if e.get("isOnlineMeeting")]
 
     def _search_user_recordings(self, user_id, deadline: float | None = None):

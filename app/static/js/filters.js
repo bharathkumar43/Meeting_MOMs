@@ -11,10 +11,13 @@
         var statusButtons = root.querySelectorAll('[data-status-filter]');
         var status = 'all';
 
-        var rows = table ? Array.prototype.slice.call(table.querySelectorAll('tbody tr[data-search]')) : [];
         var emptyRow = table ? table.querySelector('[data-filter-empty]') : null;
+        var totalEl = document.querySelector('[data-filter-total]');
 
         function apply() {
+            // Re-read rows each time: the "All" view appends older meetings later
+            var rows = table ? Array.prototype.slice.call(table.querySelectorAll('tbody tr[data-search]')) : [];
+            if (totalEl) { totalEl.textContent = rows.length; }
             var terms = (input && input.value ? input.value : '')
                 .toLowerCase()
                 .split(',')
@@ -35,11 +38,20 @@
 
         if (input) { input.addEventListener('input', apply); }
 
+        var badge = root.querySelector('[data-filter-badge]');
+        function updateBadge() {
+            if (!badge) { return; }
+            var n = (parseInt(badge.dataset.base, 10) || 0) + (status === 'all' ? 0 : 1);
+            badge.textContent = n;
+            badge.classList.toggle('d-none', n === 0);
+        }
+
         statusButtons.forEach(function (btn) {
             btn.addEventListener('click', function () {
                 status = btn.dataset.statusFilter;
                 statusButtons.forEach(function (b) { b.classList.toggle('active', b === btn); });
                 apply();
+                updateBadge();
             });
         });
 
@@ -80,9 +92,24 @@
         });
 
         apply();
+        // Let other scripts (e.g. "load older") re-run the filter on new rows
+        if (table) { table.addEventListener('rows-added', apply); }
     }
 
     document.querySelectorAll('[data-filter-root]').forEach(initFilterBar);
+
+    // Clicking anywhere on a table row with data-href opens it (links inside keep their
+    // own behaviour, so Ctrl/middle-click on the subject still opens a new tab).
+    document.addEventListener('click', function (e) {
+        var row = e.target.closest('tr[data-href]');
+        if (!row || e.target.closest('a, button, input, label, [data-bs-toggle]')) { return; }
+        if (window.getSelection && String(window.getSelection())) { return; }  // selecting text
+        window.location.href = row.dataset.href;
+    });
+    document.addEventListener('keydown', function (e) {
+        var row = e.target.closest && e.target.closest('tr[data-href]');
+        if (row && e.target === row && e.key === 'Enter') { window.location.href = row.dataset.href; }
+    });
 
     if (window.bootstrap) {
         document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {

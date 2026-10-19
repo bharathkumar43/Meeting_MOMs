@@ -9,7 +9,6 @@
             <span class="source-icon source-zoom"><i class="bi bi-camera-video"></i></span>
             Zoom Meetings
         </h1>
-        <p class="page-subtitle">Your Zoom cloud recordings. Pick one to load its transcript and build a MOM.</p>
     </div>
     {% if meetings %}
     {% set with_tx = meetings | selectattr('has_transcript', 'equalto', true) | list | length %}
@@ -65,19 +64,19 @@
                     <th>Date &amp; time</th>
                     <th>External attendees</th>
                     <th>Transcript</th>
-                    <th class="text-end">Action</th>
                 </tr>
             </thead>
             <tbody>
                 {% for meeting in meetings %}
                 {% set open_url = url_for('main.zoom_transcript', meeting_id=meeting.zoom_meeting_id) %}
                 <tr data-search="{{ ui.search_text(meeting) }}"
+                    data-href="{{ open_url }}" tabindex="0"
                     data-status="{{ 'transcript' if meeting.has_transcript else 'manual' }}">
                     <td>
                         <div class="meeting-cell">
                             <span class="source-icon source-zoom"><i class="bi bi-camera-video"></i></span>
                             <div>
-                                <div class="meeting-subject">{{ meeting.subject }}</div>
+                                <a class="row-link meeting-subject" href="{{ open_url }}">{{ meeting.subject }}</a>
                                 <div class="meeting-sub">Host: {{ meeting.organizer.emailAddress.address }}</div>
                             </div>
                         </div>
@@ -98,20 +97,9 @@
                         <span class="status-pill status-manual">Manual</span>
                         {% endif %}
                     </td>
-                    <td class="text-end">
-                        {% if meeting.has_transcript %}
-                        <a href="{{ open_url }}" class="btn btn-sm btn-primary">
-                            <i class="bi bi-file-text"></i> View transcript
-                        </a>
-                        {% else %}
-                        <a href="{{ open_url }}" class="btn btn-sm btn-outline-primary">
-                            <i class="bi bi-pencil-square"></i> Create MOM
-                        </a>
-                        {% endif %}
-                    </td>
                 </tr>
                 {% endfor %}
-                {{ ui.no_match_row(5) }}
+                {{ ui.no_match_row(4) }}
             </tbody>
         </table>
     </div>

@@ -7,7 +7,7 @@
 <div class="page-header">
     <div>
         <h1 class="page-title">Welcome back, {{ first_name }}</h1>
-        <p class="page-subtitle">{{ date_presets.today | nice_date }} &middot; Here's where your Minutes of Meeting stand.</p>
+        <p class="page-subtitle">{{ date_presets.today | nice_date }}</p>
     </div>
     <div class="page-actions">
         <a href="{{ url_for('main.teams_meetings') }}" class="btn btn-primary">

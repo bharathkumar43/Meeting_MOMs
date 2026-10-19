@@ -9,7 +9,6 @@
             <span class="source-icon source-google"><i class="bi bi-google"></i></span>
             Google Meet
         </h1>
-        <p class="page-subtitle">Google Meet invites from your Outlook calendar. Open one to load or upload its transcript.</p>
     </div>
 </div>
 
@@ -26,17 +25,17 @@
                     <th>Meeting</th>
                     <th>Date &amp; time</th>
                     <th>External attendees</th>
-                    <th class="text-end">Action</th>
                 </tr>
             </thead>
             <tbody>
                 {% for meeting in meetings %}
-                <tr data-search="{{ ui.search_text(meeting) }}">
+                {% set open_url = url_for('main.google_transcript', event_id=meeting.id) %}
+                <tr data-search="{{ ui.search_text(meeting) }}" data-href="{{ open_url }}" tabindex="0">
                     <td>
                         <div class="meeting-cell">
                             <span class="source-icon source-google"><i class="bi bi-google"></i></span>
                             <div>
-                                <div class="meeting-subject">{{ meeting.subject }}</div>
+                                <a class="row-link meeting-subject" href="{{ open_url }}">{{ meeting.subject }}</a>
                                 <div class="meeting-sub">Organizer: {{ meeting.organizer.emailAddress.address }}</div>
                             </div>
                         </div>
@@ -52,15 +51,9 @@
                         {% endif %}
                     </td>
                     <td>{{ ui.attendee_chips(meeting.external_attendees) }}</td>
-                    <td class="text-end">
-                        <a href="{{ url_for('main.google_transcript', event_id=meeting.id) }}"
-                           class="btn btn-sm btn-outline-primary">
-                            <i class="bi bi-file-text"></i> Open &amp; create MOM
-                        </a>
-                    </td>
                 </tr>
                 {% endfor %}
-                {{ ui.no_match_row(4) }}
+                {{ ui.no_match_row(3) }}
             </tbody>
         </table>
     </div>
