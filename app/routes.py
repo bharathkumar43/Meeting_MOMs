@@ -296,7 +296,8 @@ def _annotate_teams_meetings(app_client, meetings, signed_in_user_id: str) -> No
         )
         return _lookup_meeting_media(app_client, meeting, ids)
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    # Kept modest: Graph throttles (429) on bursts of parallel calls
+    with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(media, meetings))
 
     # OneDrive file search only for meetings the recordings API didn't cover

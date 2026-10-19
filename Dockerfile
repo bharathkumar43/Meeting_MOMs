@@ -29,6 +29,8 @@ EXPOSE 5100
 CMD ["gunicorn", \
      "--bind", "0.0.0.0:5100", \
      "--workers", "3", \
+     "--worker-class", "gthread", \
+     "--threads", "4", \
      "--timeout", "120", \
      "--access-logfile", "-", \
      "--error-logfile", "-", \
