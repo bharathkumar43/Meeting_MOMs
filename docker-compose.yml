@@ -28,7 +28,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@mom-db:5432/${POSTGRES_DB:-meeting_moms}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@mom-db:5432/${POSTGRES_DB:-meeting_moms}
     depends_on:
       mom-db:
         condition: service_healthy

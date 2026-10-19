@@ -1,6 +1,8 @@
 Flask==3.1.0
 flask-session==0.8.0
 flask-sqlalchemy==3.1.1
+# Pinned: SQLAlchemy 2.1 makes postgresql:// default to psycopg 3, which is not installed
+SQLAlchemy>=2.0.51,<2.1
 flask-migrate==4.0.7
 gunicorn==23.0.0
 msal==1.31.1

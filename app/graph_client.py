@@ -9,6 +9,13 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+# (connect, read) timeout for every Graph call so a stalled request can't hang a worker
+_TIMEOUT = (5, 30)
+# Dashboard file lookup gives up after this many seconds instead of waiting out throttling
+_LOOKUP_BUDGET_SECONDS = 25
+# Parallel OneDrive searches — kept low because bursts trigger Graph 429 throttling
+_LOOKUP_MAX_WORKERS = 3
+
 
 def _parse_retry_after(resp):
     """Parse Retry-After header safely. Handles values like '30', '30,120', or missing."""
@@ -32,7 +39,7 @@ class GraphClient:
 
     def get_user_profile(self):
         """Get the signed-in user's profile."""
-        resp = requests.get(f"{self.base_url}/me", headers=self.headers)
+        resp = requests.get(f"{self.base_url}/me", headers=self.headers, timeout=_TIMEOUT)
         resp.raise_for_status()
         return resp.json()
 
@@ -57,6 +64,7 @@ class GraphClient:
             f"{self.base_url}/me/calendarView",
             headers=headers,
             params=params,
+            timeout=_TIMEOUT,
         )
         resp.raise_for_status()
         events = resp.json().get("value", [])
@@ -71,6 +79,7 @@ class GraphClient:
             params={
                 "$select": "id,subject,start,end,attendees,onlineMeeting,organizer,isOnlineMeeting"
             },
+            timeout=_TIMEOUT,
         )
         if resp.status_code == 404:
             return None
@@ -86,6 +95,7 @@ class GraphClient:
             f"{self.base_url}/me/onlineMeetings",
             headers=self.headers,
             params=params,
+            timeout=_TIMEOUT,
         )
         if resp.status_code != 200:
             logger.warning(
@@ -107,6 +117,7 @@ class GraphClient:
             f"{self.base_url}/users/{user_id}/onlineMeetings",
             headers=self.headers,
             params=params,
+            timeout=_TIMEOUT,
         )
         if resp.status_code != 200:
             logger.warning(
@@ -123,7 +134,7 @@ class GraphClient:
             url = f"{self.base_url}/users/{user_id}/onlineMeetings/{meeting_id}/transcripts"
         else:
             url = f"{self.base_url}/me/onlineMeetings/{meeting_id}/transcripts"
-        resp = requests.get(url, headers=self.headers)
+        resp = requests.get(url, headers=self.headers, timeout=_TIMEOUT)
         if resp.status_code != 200:
             logger.warning("list_transcripts: %d - %s", resp.status_code, resp.text[:200])
             return []
@@ -157,7 +168,9 @@ class GraphClient:
             url = f"{self.base_url}/users/{user_id}/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
         else:
             url = f"{self.base_url}/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
-        resp = requests.get(url, headers=headers, params={"$format": "text/vtt"})
+        resp = requests.get(
+            url, headers=headers, params={"$format": "text/vtt"}, timeout=_TIMEOUT
+        )
         if resp.status_code != 200:
             logger.warning("get_transcript_content: %d - %s", resp.status_code, resp.text[:200])
             return None
@@ -213,6 +226,7 @@ class GraphClient:
             f"{self.base_url}/me/sendMail",
             headers=self.headers,
             json=payload,
+            timeout=_TIMEOUT,
         )
         resp.raise_for_status()
         return True
@@ -251,7 +265,7 @@ class GraphClient:
 
         encoded_sender = quote(sender_mailbox.strip(), safe="")
         url = f"{self.base_url}/users/{encoded_sender}/sendMail"
-        resp = requests.post(url, headers=self.headers, json=payload)
+        resp = requests.post(url, headers=self.headers, json=payload, timeout=_TIMEOUT)
         if resp.status_code >= 400:
             logger.error(
                 "send_mail_as_user failed: %s %s",
@@ -380,6 +394,7 @@ class GraphClient:
             f"{self.base_url}/users/{user_email}",
             headers=self.headers,
             params={"$select": "id,displayName,userPrincipalName"},
+            timeout=_TIMEOUT,
         )
         resp.raise_for_status()
         return resp.json()
@@ -401,6 +416,7 @@ class GraphClient:
             f"{self.base_url}/users/{user_id}/calendarView",
             headers=headers,
             params=params,
+            timeout=_TIMEOUT,
         )
         resp.raise_for_status()
         events = resp.json().get("value", [])
@@ -418,6 +434,7 @@ class GraphClient:
                     f"{self.base_url}/users/{user_id}/drive/root/search(q='Meeting Recording')",
                     headers=self.headers,
                     params={"$select": "name,createdDateTime", "$top": 200},
+                    timeout=_TIMEOUT,
                 )
                 if resp.status_code == 429:
                     wait = _parse_retry_after(resp)
@@ -446,26 +463,32 @@ class GraphClient:
                 return []
         return []
 
-    def _resolve_user_id_safe(self, email):
-        """Resolve email to user ID, returning None on failure."""
+    def _resolve_user_id_safe(self, email, deadline: float | None = None):
+        """Resolve email to user ID, returning None on failure.
+        If deadline (time.monotonic() value) is set, skip a 429 retry that would overrun it."""
         try:
             resp = requests.get(
                 f"{self.base_url}/users/{email}",
                 headers=self.headers,
                 params={"$select": "id"},
+                timeout=_TIMEOUT,
             )
             if resp.status_code == 429:
                 wait = _parse_retry_after(resp)
+                if deadline is not None and time.monotonic() + wait > deadline:
+                    logger.info("Rate limited resolving %s, skipping (time budget)", email)
+                    return None
                 time.sleep(wait)
                 resp = requests.get(
                     f"{self.base_url}/users/{email}",
                     headers=self.headers,
                     params={"$select": "id"},
+                    timeout=_TIMEOUT,
                 )
             if resp.status_code == 200:
                 return resp.json().get("id")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("_resolve_user_id_safe failed for %s: %s", email, e)
         return None
 
     def build_recording_lookup(self, meetings, user_id, org_domain=""):
@@ -504,43 +527,67 @@ class GraphClient:
         logger.info("Recording lookup: found %d recording(s)", len(all_recordings))
         return all_recordings
 
-    def build_file_lookup(self, meetings, user_id: str, org_domain: str = "") -> dict:
+    def build_file_lookup(
+        self,
+        meetings,
+        user_id: str,
+        org_domain: str = "",
+        include_recordings: bool = False,
+    ) -> dict:
         """
-        Search OneDrives for both recording AND transcript files in a single thread pool.
+        Search OneDrives of the viewed user and all distinct internal organizers for
+        transcript files (and recording files only if include_recordings=True).
         Returns {"recordings": [...], "transcripts": [...]}.
         Transcript entries have the same shape as recording entries (subject, date, time)
         plus item_id and ext — so _match_recording() works on both lists.
+
+        Bounded by _LOOKUP_BUDGET_SECONDS: when Graph throttles (429) beyond the budget,
+        the affected searches return empty rather than blocking the page.
         """
         if not org_domain:
             org_domain = getattr(Config, "ORG_DOMAIN", "")
 
-        emails_seen: set = set()
-        user_ids_to_search: set = {user_id}
+        deadline = time.monotonic() + _LOOKUP_BUDGET_SECONDS
 
+        organizer_emails: set = set()
         for m in meetings:
             org_email = (
                 m.get("organizer", {}).get("emailAddress", {}).get("address", "")
             ).lower()
-            if org_email and org_email.endswith(f"@{org_domain}") and org_email not in emails_seen:
-                emails_seen.add(org_email)
-                uid = self._resolve_user_id_safe(org_email)
-                if uid:
-                    user_ids_to_search.add(uid)
+            if org_email and org_email.endswith(f"@{org_domain}"):
+                organizer_emails.add(org_email)
+
+        user_ids_to_search: set = {user_id}
+        if organizer_emails:
+            workers = min(len(organizer_emails), _LOOKUP_MAX_WORKERS)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [
+                    pool.submit(self._resolve_user_id_safe, email, deadline)
+                    for email in organizer_emails
+                ]
+                for future in as_completed(futures):
+                    uid = future.result()
+                    if uid:
+                        user_ids_to_search.add(uid)
 
         logger.info("File lookup: searching %d user(s)", len(user_ids_to_search))
 
         tasks: list[tuple[str, str]] = []
         for uid in user_ids_to_search:
-            tasks.append((uid, "recordings"))
             tasks.append((uid, "transcripts"))
+            if include_recordings:
+                tasks.append((uid, "recordings"))
 
         results: dict = {"recordings": [], "transcripts": []}
-        workers = min(len(tasks), 8)
+        workers = min(len(tasks), _LOOKUP_MAX_WORKERS)
         with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
             future_map = {}
             for uid, ftype in tasks:
-                fn = self._search_user_recordings if ftype == "recordings" else self._search_user_transcripts
-                future_map[pool.submit(fn, uid)] = ftype
+                if ftype == "recordings":
+                    future = pool.submit(self._search_user_recordings, uid)
+                else:
+                    future = pool.submit(self._search_user_transcripts, uid, deadline)
+                future_map[future] = ftype
             for future in as_completed(future_map):
                 results[future_map[future]].extend(future.result())
 
@@ -550,11 +597,14 @@ class GraphClient:
         )
         return results
 
-    def _search_user_transcripts(self, user_id: str) -> list[dict]:
+    def _search_user_transcripts(
+        self, user_id: str, deadline: float | None = None
+    ) -> list[dict]:
         """
         Search a user's OneDrive for Teams transcript files with retry on 429.
         Teams saves transcripts as: Subject-YYYYMMDD_HHMMSS-Transcript.vtt (or .docx)
         Returns list of dicts: {subject, date, time, item_id, ext, user_id}.
+        If deadline (time.monotonic() value) is set, gives up instead of waiting past it.
         """
         for attempt in range(3):
             try:
@@ -562,9 +612,16 @@ class GraphClient:
                     f"{self.base_url}/users/{user_id}/drive/root/search(q='Transcript')",
                     headers=self.headers,
                     params={"$select": "id,name,createdDateTime", "$top": 200},
+                    timeout=_TIMEOUT,
                 )
                 if resp.status_code == 429:
                     wait = _parse_retry_after(resp)
+                    if deadline is not None and time.monotonic() + wait > deadline:
+                        logger.warning(
+                            "Rate limited transcript search for %s, giving up (time budget)",
+                            user_id,
+                        )
+                        return []
                     logger.info("Rate limited transcript search for %s, retrying in %ds", user_id, wait)
                     time.sleep(wait)
                     continue
