@@ -4,77 +4,106 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Meeting MOM Generator{% endblock %}</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E📋%3C/text%3E%3C/svg%3E">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='cloudfuze_logo.png') }}">
     <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/bootstrap-icons.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
     {% block head %}{% endblock %}
 </head>
 <body>
-    {% if session.get('user') %}
-    <nav class="navbar navbar-expand-lg sticky-top">
-        <div class="container">
-            <a class="navbar-brand d-flex align-items-center gap-2" href="{{ url_for('main.dashboard') }}">
-                <i class="bi bi-journal-text fs-4"></i>
-                <span>MOM Generator</span>
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto align-items-center gap-2">
-                    <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('main.dashboard') }}">
-                            <i class="bi bi-grid-1x2"></i> Dashboard
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('main.zoom_dashboard') }}">
-                            <i class="bi bi-camera-video"></i> Zoom Meetings
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('main.google_dashboard') }}">
-                            <i class="bi bi-google"></i> Google Meetings
-                        </a>
-                    </li>
-                    {% set current_email = session['user'].get('preferred_username', '') or session['user'].get('upn', '') %}
-                    {% if current_email.lower() in config.ADMIN_EMAILS %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('main.admin_dashboard') }}">
-                            <i class="bi bi-shield-lock"></i> Admin
-                        </a>
-                    </li>
+{% block body %}
+    {% set ep = request.endpoint or '' %}
+    <nav class="navbar navbar-expand-lg app-navbar sticky-top">
+        <a class="navbar-brand" href="{{ url_for('main.dashboard') }}">
+            <img src="{{ url_for('static', filename='cloudfuze_logo.png') }}" alt="CloudFuze" class="brand-logo">
+            <span class="brand-divider d-none d-sm-inline-block"></span>
+            <span class="brand-name d-none d-sm-inline">MOM Generator</span>
+        </a>
+
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#appNav"
+                aria-controls="appNav" aria-expanded="false" aria-label="Toggle navigation">
+            <i class="bi bi-list fs-4"></i>
+        </button>
+
+        <div class="collapse navbar-collapse" id="appNav">
+            <ul class="navbar-nav gap-1 me-auto">
+                <li class="nav-item">
+                    <a class="nav-link {{ 'active' if ep == 'main.dashboard' }}" href="{{ url_for('main.dashboard') }}">
+                        <i class="bi bi-grid-1x2"></i> Overview
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link {{ 'active' if ep in ('main.teams_meetings', 'main.transcript', 'main.teams_recording') }}"
+                       href="{{ url_for('main.teams_meetings') }}">
+                        <i class="bi bi-microsoft-teams"></i> Teams
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link {{ 'active' if ep.startswith('main.zoom') }}" href="{{ url_for('main.zoom_dashboard') }}">
+                        <i class="bi bi-camera-video"></i> Zoom
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link {{ 'active' if ep.startswith('main.google') }}" href="{{ url_for('main.google_dashboard') }}">
+                        <i class="bi bi-google"></i> Google Meet
+                    </a>
+                </li>
+                {% if nav_user.is_admin %}
+                <li class="nav-item">
+                    <a class="nav-link {{ 'active' if ep.startswith('main.admin') }}" href="{{ url_for('main.admin_dashboard') }}">
+                        <i class="bi bi-shield-lock"></i> Admin
+                    </a>
+                </li>
+                {% endif %}
+            </ul>
+
+            <div class="dropdown profile-wrap">
+                <button class="profile-toggle dropdown-toggle" type="button" data-bs-toggle="dropdown"
+                        aria-expanded="false" aria-label="Account menu">
+                    <span class="avatar">{{ nav_user.initials }}</span>
+                    <span class="profile-name">{{ nav_user.name }}</span>
+                    <i class="bi bi-chevron-down small text-muted"></i>
+                </button>
+                <div class="dropdown-menu dropdown-menu-end profile-menu">
+                    <div class="profile-menu-header">
+                        <span class="avatar avatar-lg">{{ nav_user.initials }}</span>
+                        <div class="min-w-0">
+                            <div class="fw-semibold">{{ nav_user.name }}</div>
+                            <div class="email">{{ nav_user.email }}</div>
+                            {% if nav_user.is_admin %}
+                            <span class="badge bg-primary-subtle text-primary mt-1">Admin</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="dropdown-divider"></div>
+                    <a class="dropdown-item" href="{{ url_for('main.dashboard') }}">
+                        <i class="bi bi-grid-1x2"></i> My overview
+                    </a>
+                    {% if nav_user.is_admin %}
+                    <a class="dropdown-item" href="{{ url_for('main.admin_dashboard') }}">
+                        <i class="bi bi-shield-lock"></i> Admin dashboard
+                    </a>
                     {% endif %}
-                    <li class="nav-item">
-                        <span class="nav-link text-muted">
-                            <i class="bi bi-person-circle"></i>
-                            {{ session['user'].get('name', 'User') }}
-                        </span>
-                    </li>
-                    <li class="nav-item">
-                        <a class="btn btn-outline-danger btn-sm" href="{{ url_for('main.logout') }}">
-                            <i class="bi bi-box-arrow-right"></i> Sign Out
-                        </a>
-                    </li>
-                </ul>
+                    <div class="dropdown-divider"></div>
+                    <a class="dropdown-item text-danger" href="{{ url_for('main.logout') }}">
+                        <i class="bi bi-box-arrow-right"></i> Sign out
+                    </a>
+                </div>
             </div>
         </div>
     </nav>
-    {% endif %}
 
-    <main class="container py-4">
+    <main class="app-main">
         {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
-        <div class="row justify-content-center">
-            <div class="col-lg-10">
-                {% for category, message in messages %}
-                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-                    {{ message }}
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                </div>
-                {% endfor %}
+        <div class="flash-stack mb-3">
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show d-flex align-items-center gap-2" role="alert">
+                <i class="bi {{ {'success': 'bi-check-circle-fill', 'danger': 'bi-x-octagon-fill', 'warning': 'bi-exclamation-triangle-fill'}.get(category, 'bi-info-circle-fill') }}"></i>
+                <div>{{ message }}</div>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             </div>
+            {% endfor %}
         </div>
         {% endif %}
         {% endwith %}
@@ -82,9 +111,11 @@
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="text-center py-3 mt-auto border-top">
-        <small class="text-muted">CloudFuze, Inc. &mdash; Meeting MOM Generator</small>
+    <footer class="app-footer d-flex justify-content-between flex-wrap gap-2">
+        <span>&copy; CloudFuze, Inc. &mdash; Meeting MOM Generator</span>
+        <span>Times shown in UTC</span>
     </footer>
+{% endblock %}
 
     <script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
     {% block scripts %}{% endblock %}

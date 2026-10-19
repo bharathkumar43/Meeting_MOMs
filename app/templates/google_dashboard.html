@@ -1,133 +1,83 @@
 {% extends "base.html" %}
-{% block title %}Google Meetings - MOM Generator{% endblock %}
+{% import "_macros.html" as ui with context %}
+{% block title %}Google Meet - MOM Generator{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-lg-10">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <div>
-                <h3 class="fw-bold mb-1">
-                    <i class="bi bi-google text-danger me-2"></i>Google Meetings
-                </h3>
-                <p class="text-muted mb-0">Google Meet meetings from your Outlook calendar — click a meeting to load transcript and generate MOM</p>
-            </div>
-        </div>
-
-        <!-- Filters -->
-        <div class="card border-0 shadow-sm mb-4">
-            <div class="card-body">
-                <form method="GET" action="{{ url_for('main.google_dashboard') }}" class="row g-3 align-items-end">
-                    <div class="col-md-3">
-                        <label class="form-label fw-semibold">From Date</label>
-                        <input type="date" class="form-control" name="start_date" value="{{ start_date }}" required>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label fw-semibold">To Date</label>
-                        <input type="date" class="form-control" name="end_date" value="{{ end_date }}" required>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label fw-semibold">Subject Filter (optional)</label>
-                        <input type="text" class="form-control" name="keyword"
-                               value="{{ keyword or '' }}"
-                               placeholder="e.g. Customer Call, Migration">
-                    </div>
-                    <div class="col-md-2">
-                        <button type="submit" class="btn btn-danger w-100">
-                            <i class="bi bi-search"></i> Search
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-
-        <!-- Results (always shown) -->
-        {% set total_count = meetings|length %}
-
-        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-            <span class="fw-semibold">
-                <i class="bi bi-google text-danger me-1"></i>
-                {{ total_count }} Google Meet meeting{{ 's' if total_count != 1 }} found
-            </span>
-            <span class="badge bg-danger-subtle text-danger">From your Outlook calendar</span>
-        </div>
-
-        <div class="card border-0 shadow-sm">
-            <div class="card-body p-0">
-                {% if meetings %}
-                <div class="table-responsive">
-                    <table class="table table-hover align-middle mb-0">
-                        <thead class="table-light">
-                            <tr>
-                                <th class="ps-4">Meeting</th>
-                                <th>Date &amp; Time</th>
-                                <th>External Attendees</th>
-                                <th class="text-end pe-4">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for meeting in meetings %}
-                            <tr>
-                                <td class="ps-4">
-                                    <div class="d-flex align-items-center gap-2">
-                                        <span class="badge bg-danger-subtle text-danger">Google</span>
-                                        <div>
-                                            <div class="fw-semibold">{{ meeting.subject }}</div>
-                                            <small class="text-muted">{{ meeting.organizer.emailAddress.address }}</small>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td>
-                                    {% if meeting.start.dateTime %}
-                                    <div>{{ meeting.start.dateTime[:10] }}</div>
-                                    <small class="text-muted">
-                                        {{ meeting.start.dateTime[11:16] }}
-                                        {% if meeting.end.dateTime %} – {{ meeting.end.dateTime[11:16] }}{% endif %} UTC
-                                    </small>
-                                    {% else %}
-                                    <span class="text-muted">—</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% for att in meeting.external_attendees[:3] %}
-                                    <span class="badge bg-danger-subtle text-danger me-1">
-                                        {{ att.name or att.email }}
-                                    </span>
-                                    {% endfor %}
-                                    {% if meeting.external_attendees|length > 3 %}
-                                    <span class="badge bg-secondary-subtle text-secondary">
-                                        +{{ meeting.external_attendees|length - 3 }} more
-                                    </span>
-                                    {% endif %}
-                                    {% if not meeting.external_attendees %}
-                                    <span class="text-muted small">—</span>
-                                    {% endif %}
-                                </td>
-                                <td class="text-end pe-4">
-                                    <a href="{{ url_for('main.google_transcript', event_id=meeting.id) }}"
-                                       class="btn btn-sm btn-outline-danger">
-                                        <i class="bi bi-file-text"></i> View / Create MOM
-                                    </a>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-                {% else %}
-                <div class="text-center py-5">
-                    <i class="bi bi-google display-4 text-muted opacity-50"></i>
-                    <p class="text-muted mt-3 mb-1">No Google Meet meetings found for
-                        <strong>{{ start_date }}</strong> to <strong>{{ end_date }}</strong>.
-                    </p>
-                    <p class="text-muted small">
-                        Only calendar invites containing a <code>meet.google.com</code> link appear here.
-                        Try a wider date range if you expect to see meetings.
-                    </p>
-                </div>
-                {% endif %}
-            </div>
-        </div>
-
+<div class="page-header">
+    <div>
+        <h1 class="page-title">
+            <span class="source-icon source-google"><i class="bi bi-google"></i></span>
+            Google Meet
+        </h1>
+        <p class="page-subtitle">Google Meet invites from your Outlook calendar. Open one to load or upload its transcript.</p>
     </div>
 </div>
+
+{{ ui.filter_bar('main.google_dashboard', start_date, end_date, keyword, show_status=False) }}
+
+{{ ui.results_meta(meetings | length, extra=(start_date | nice_date) ~ ' – ' ~ (end_date | nice_date)) }}
+
+<div class="card">
+    {% if meetings %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle" id="meetingsTable">
+            <thead>
+                <tr>
+                    <th>Meeting</th>
+                    <th>Date &amp; time</th>
+                    <th>External attendees</th>
+                    <th class="text-end">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for meeting in meetings %}
+                <tr data-search="{{ ui.search_text(meeting) }}">
+                    <td>
+                        <div class="meeting-cell">
+                            <span class="source-icon source-google"><i class="bi bi-google"></i></span>
+                            <div>
+                                <div class="meeting-subject">{{ meeting.subject }}</div>
+                                <div class="meeting-sub">Organizer: {{ meeting.organizer.emailAddress.address }}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>
+                        {% if meeting.start.dateTime %}
+                        <div class="date-main">{{ meeting.start.dateTime | nice_date }}</div>
+                        <div class="date-sub">
+                            {{ meeting.start.dateTime[11:16] }}{% if meeting.end.dateTime %} &ndash; {{ meeting.end.dateTime[11:16] }}{% endif %} UTC
+                        </div>
+                        {% else %}
+                        <span class="text-muted">&mdash;</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ ui.attendee_chips(meeting.external_attendees) }}</td>
+                    <td class="text-end">
+                        <a href="{{ url_for('main.google_transcript', event_id=meeting.id) }}"
+                           class="btn btn-sm btn-outline-primary">
+                            <i class="bi bi-file-text"></i> Open &amp; create MOM
+                        </a>
+                    </td>
+                </tr>
+                {% endfor %}
+                {{ ui.no_match_row(4) }}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <div class="empty-icon"><i class="bi bi-google"></i></div>
+        <h6>No Google Meet meetings in this range</h6>
+        <p class="small mb-3">Only calendar invites containing a <code>meet.google.com</code> link appear here.</p>
+        <a class="btn btn-sm btn-outline-primary"
+           href="{{ url_for('main.google_dashboard', start_date=date_presets.presets[2][1], end_date=date_presets.today) }}">
+            Try the last 30 days
+        </a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/filters.js') }}"></script>
 {% endblock %}

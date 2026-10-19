@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 from flask import (
     Blueprint, render_template, redirect, url_for,
-    request, session, flash, send_file, jsonify, Response,
+    request, session, flash, send_file, jsonify, Response, stream_with_context,
 )
 import io
 from docx import Document
@@ -31,12 +32,53 @@ from app.activity_tracker import (
     get_all_users, get_user_stats, get_pending_moms, get_sent_moms,
     get_managers, get_non_managers,
     get_audit_rows, get_audit_totals,
-    get_all_user_dashboard_stats,
+    get_all_user_dashboard_stats, get_user_overview,
 )
 from app.audit_report_email import send_daily_audit_report
 from config import Config
 
 main_bp = Blueprint("main", __name__)
+
+
+def _current_user_email() -> str:
+    user = session.get("user", {})
+    return (user.get("preferred_username") or user.get("upn") or "").lower()
+
+
+@main_bp.app_context_processor
+def inject_layout_context() -> dict:
+    """Navbar profile info and date-filter presets shared by every page."""
+    user = session.get("user") or {}
+    name = user.get("name", "") or ""
+    email = _current_user_email()
+    initials = "".join(part[0] for part in name.split()[:2]).upper() or (email[:1].upper() or "U")
+    today = datetime.now()
+    return {
+        "nav_user": {
+            "name": name or email,
+            "email": email,
+            "initials": initials,
+            "is_admin": bool(email) and email in Config.ADMIN_EMAILS,
+        },
+        "date_presets": {
+            "today": today.strftime("%Y-%m-%d"),
+            "presets": [
+                ("Today", today.strftime("%Y-%m-%d")),
+                ("7 days", (today - timedelta(days=7)).strftime("%Y-%m-%d")),
+                ("30 days", (today - timedelta(days=30)).strftime("%Y-%m-%d")),
+                ("90 days", (today - timedelta(days=90)).strftime("%Y-%m-%d")),
+            ],
+        },
+    }
+
+
+@main_bp.app_template_filter("nice_date")
+def nice_date(value: str) -> str:
+    """'2026-10-19T14:00:00' or '2026-10-19' -> 'Mon, 19 Oct 2026'."""
+    try:
+        return datetime.strptime((value or "")[:10], "%Y-%m-%d").strftime("%a, %d %b %Y")
+    except ValueError:
+        return value or ""
 
 
 @main_bp.route("/favicon.ico")
@@ -91,13 +133,13 @@ def _normalize_subject(s):
     return s
 
 
-def _match_recording(meeting, all_recordings):
-    """Check if a calendar event has a matching recording file in OneDrive."""
+def _find_recording(meeting, all_recordings):
+    """Return the OneDrive file entry matching a calendar event (by date + subject), or None."""
     if not all_recordings:
-        return False
+        return None
     meeting_start = meeting.get("start", {}).get("dateTime", "")
     if not meeting_start:
-        return False
+        return None
     meeting_date = meeting_start[:10].replace("-", "")
     norm_subject = _normalize_subject(meeting.get("subject", ""))
     for rec in all_recordings:
@@ -105,8 +147,13 @@ def _match_recording(meeting, all_recordings):
             continue
         norm_rec = _normalize_subject(rec["subject"])
         if norm_rec == norm_subject or norm_rec in norm_subject or norm_subject in norm_rec:
-            return True
-    return False
+            return rec
+    return None
+
+
+def _match_recording(meeting, all_recordings):
+    """Check if a calendar event has a matching recording file in OneDrive."""
+    return _find_recording(meeting, all_recordings) is not None
 
 
 def _app_user_ids_for_transcript_lookup(app_client, meeting, signed_in_email="", viewed_user_id=None):
@@ -118,6 +165,12 @@ def _app_user_ids_for_transcript_lookup(app_client, meeting, signed_in_email="",
         if uid and uid not in seen:
             seen.add(uid)
             ids.append(uid)
+
+    # The join link names the real organizer — the only option for channel meetings,
+    # whose calendar organizer is a group mailbox rather than a user.
+    add_uid(GraphClient.organizer_id_from_join_url(
+        (meeting.get("onlineMeeting") or {}).get("joinUrl", "")
+    ))
 
     if viewed_user_id:
         add_uid(viewed_user_id)
@@ -189,6 +242,88 @@ def meeting_has_transcript_signal(
             return True
 
     return False
+
+
+_RECORDING_MAP_LIMIT = 300
+
+
+def _lookup_meeting_media(app_client, meeting, user_ids) -> dict:
+    """
+    Resolve the onlineMeeting via the first user ID that owns it, then report whether it has
+    transcripts and return its newest recording (recordings API) as a session-map entry.
+    """
+    result = {"has_transcript": False, "recording": None}
+    join_url = (meeting.get("onlineMeeting") or {}).get("joinUrl", "")
+    if not join_url:
+        return result
+    for uid in user_ids:
+        try:
+            online_meeting = app_client.get_online_meeting_for_user(uid, join_url)
+            if not online_meeting:
+                continue
+            result["has_transcript"] = bool(
+                app_client.list_transcripts(online_meeting["id"], user_id=uid)
+            )
+            recs = app_client.list_meeting_recordings(online_meeting["id"], uid)
+            if recs:
+                newest = max(recs, key=lambda r: r.get("createdDateTime", ""))
+                result["recording"] = {
+                    "kind": "api",
+                    "user_id": uid,
+                    "meeting_id": online_meeting["id"],
+                    "recording_id": newest.get("id", ""),
+                    "created": newest.get("createdDateTime", ""),
+                }
+            return result
+        except Exception as e:
+            logger.debug("Media lookup failed for uid=%s: %s", uid, e)
+    return result
+
+
+def _annotate_teams_meetings(app_client, meetings, signed_in_user_id: str) -> None:
+    """
+    Set has_transcript / has_recording on each meeting using real Graph lookups.
+    Transcripts: onlineMeeting transcript API via the organizer (app token + access policy).
+    Recordings: matching .mp4 in the organizer's / signed-in user's OneDrive.
+    Recording file IDs are kept server-side in the session, keyed by calendar event ID, so
+    the recording route only ever serves files matched to the user's own calendar.
+    """
+    signed_in_email = _current_user_email()
+
+    def media(meeting) -> dict:
+        ids = _app_user_ids_for_transcript_lookup(
+            app_client, meeting, signed_in_email=signed_in_email
+        )
+        return _lookup_meeting_media(app_client, meeting, ids)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(media, meetings))
+
+    # OneDrive file search only for meetings the recordings API didn't cover
+    missing = [m for m, r in zip(meetings, results) if not r["recording"]]
+    recordings = []
+    if missing:
+        try:
+            recordings = app_client.build_recording_lookup(
+                missing, signed_in_user_id, Config.ORG_DOMAIN
+            )
+        except Exception:
+            logger.exception("Recording lookup failed")
+
+    recording_map = dict(session.get("recording_map", {}))
+    for meeting, result in zip(meetings, results):
+        meeting["has_transcript"] = result["has_transcript"]
+        entry = result["recording"]
+        if not entry:
+            rec = _find_recording(meeting, recordings)
+            if rec and rec.get("item_id"):
+                entry = {"kind": "onedrive", "user_id": rec["user_id"], "item_id": rec["item_id"]}
+        meeting["has_recording"] = entry is not None
+        if entry:
+            recording_map[meeting["id"]] = entry
+
+    # Keep the session small: newest entries win
+    session["recording_map"] = dict(list(recording_map.items())[-_RECORDING_MAP_LIMIT:])
 
 
 def login_required(f):
@@ -275,6 +410,16 @@ def admin_grant_consent():
 @main_bp.route("/dashboard")
 @login_required
 def dashboard():
+    """Overview: the signed-in user's own MOM activity, read from the DB only."""
+    overview = get_user_overview(_current_user_email())
+    return render_template("dashboard.html", overview=overview)
+
+
+# ── Teams Meetings ───────────────────────────────────────────
+
+@main_bp.route("/meetings/teams")
+@login_required
+def teams_meetings():
     start_date = request.args.get("start_date", "")
     end_date = request.args.get("end_date", "")
     keyword = request.args.get("keyword", "")
@@ -303,22 +448,17 @@ def dashboard():
         app_client = GraphClient(app_token) if app_token else None
 
         if app_client and meetings:
-            user_profile = client.get_user_profile()
-            dashboard_user_id = user_profile.get("id", "")
+            dashboard_user_id = client.get_user_profile().get("id", "")
             if dashboard_user_id:
-                file_lookup = app_client.build_file_lookup(
-                    meetings, dashboard_user_id, Config.ORG_DOMAIN
-                )
-                all_transcripts = file_lookup["transcripts"]
-                for meeting in meetings:
-                    meeting["has_transcript"] = _match_recording(meeting, all_transcripts)
+                _annotate_teams_meetings(app_client, meetings, dashboard_user_id)
 
-    except Exception as e:
-        flash(f"Error fetching meetings: {str(e)}", "danger")
+    except Exception:
+        logger.exception("teams_meetings calendar fetch failed")
+        flash("Error fetching meetings from Microsoft. Please try again.", "danger")
         meetings = []
 
     return render_template(
-        "dashboard.html",
+        "teams_meetings.html",
         meetings=meetings,
         start_date=start_date,
         end_date=end_date,
@@ -333,7 +473,7 @@ def dashboard():
 def transcript():
     event_id = request.args.get("event_id", "")
     join_url = request.args.get("join_url", "")
-    back_url = request.args.get("back") or url_for("main.dashboard")
+    back_url = request.args.get("back") or url_for("main.teams_meetings")
 
     token = get_token()
     client = GraphClient(token)
@@ -346,7 +486,7 @@ def transcript():
 
     if not meeting:
         flash("Meeting not found.", "warning")
-        return redirect(url_for("main.dashboard"))
+        return redirect(url_for("main.teams_meetings"))
 
     # Build attendees list
     attendees = []
@@ -408,20 +548,29 @@ def transcript():
                 user_data.get("preferred_username") or user_data.get("upn") or ""
             )
             targets = []
+            link_oid = GraphClient.organizer_id_from_join_url(effective_join_url)
+            if link_oid:
+                targets.append(("join-link organizer", link_oid))
             if organizer_email:
                 targets.append(("organizer", organizer_email))
             if signed_in_email and signed_in_email.lower() != (organizer_email or "").lower():
                 targets.append(("signed-in user", signed_in_email))
 
-            for label, target_email in targets:
+            tried_uids = set()
+            for label, target in targets:
                 if transcript_text:
                     break
                 try:
-                    uid = app_client._resolve_user_id_safe(target_email)
+                    uid = target if label == "join-link organizer" else (
+                        app_client._resolve_user_id_safe(target)
+                    )
                     if not uid:
-                        logger.info("Step 2: Cannot resolve %s (%s)", label, target_email)
+                        logger.info("Step 2: Cannot resolve %s (%s)", label, target)
                         continue
-                    logger.info("Step 2: Trying via %s (%s)", label, target_email)
+                    if uid in tried_uids:
+                        continue
+                    tried_uids.add(uid)
+                    logger.info("Step 2: Trying via %s (%s)", label, target)
                     online_meeting = app_client.get_online_meeting_for_user(
                         uid, effective_join_url
                     )
@@ -466,10 +615,16 @@ def transcript():
             if signed_in_s3 and signed_in_s3.lower() != (organizer_email or "").lower():
                 step3_targets.append(signed_in_s3)
 
+            step3_oid = GraphClient.organizer_id_from_join_url(effective_join_url)
+            if step3_oid:
+                step3_targets.insert(0, step3_oid)
+
             for target_email in step3_targets:
                 if transcript_text:
                     break
-                uid = step3_client._resolve_user_id_safe(target_email)
+                uid = target_email if target_email == step3_oid else (
+                    step3_client._resolve_user_id_safe(target_email)
+                )
                 if not uid:
                     logger.info("Step 3: Cannot resolve user %s", target_email)
                     continue
@@ -524,6 +679,132 @@ def transcript():
         back_url=back_url,
         back_label="Customer Meetings",
     )
+
+
+@main_bp.route("/meetings/teams/recording")
+@login_required
+def teams_recording():
+    """Play / download the Teams recording for a meeting on the signed-in user's calendar."""
+    event_id = request.args.get("event_id", "")
+    back_url = url_for("main.teams_meetings")
+
+    client = GraphClient(get_token())
+    try:
+        meeting = client.get_event(event_id) if event_id else None
+    except Exception:
+        logger.exception("teams_recording: event lookup failed")
+        meeting = None
+    if not meeting:
+        flash("Meeting not found on your calendar.", "warning")
+        return redirect(back_url)
+
+    app_token = get_app_token()
+    if not app_token:
+        flash("Recordings are unavailable: the app token could not be acquired.", "danger")
+        return redirect(back_url)
+    app_client = GraphClient(app_token)
+
+    # Only recordings matched to this calendar event are served (never a client-supplied ID)
+    recording_map = dict(session.get("recording_map", {}))
+    entry = recording_map.get(meeting["id"])
+    if not entry:
+        try:
+            ids = _app_user_ids_for_transcript_lookup(
+                app_client, meeting, signed_in_email=_current_user_email()
+            )
+            entry = _lookup_meeting_media(app_client, meeting, ids)["recording"]
+            if not entry:
+                me_id = client.get_user_profile().get("id", "")
+                rec = _find_recording(
+                    meeting,
+                    app_client.build_recording_lookup([meeting], me_id, Config.ORG_DOMAIN),
+                )
+                if rec and rec.get("item_id"):
+                    entry = {"kind": "onedrive", "user_id": rec["user_id"], "item_id": rec["item_id"]}
+        except Exception:
+            logger.exception("teams_recording: recording lookup failed")
+            entry = None
+        if entry:
+            recording_map[meeting["id"]] = entry
+            session["recording_map"] = recording_map
+
+    recording = None
+    if entry and entry.get("kind") == "api":
+        stream_url = url_for("main.teams_recording_stream", event_id=meeting["id"])
+        recording = {
+            "name": f"{meeting.get('subject', 'Meeting')} - Recording.mp4",
+            "size": None,
+            "web_url": "",
+            "created": entry.get("created", ""),
+            "download_url": stream_url,
+            "file_download_url": f"{stream_url}&download=1",
+        }
+    elif entry:
+        recording = app_client.get_recording_file(entry["user_id"], entry["item_id"])
+        if recording:
+            recording["file_download_url"] = recording.get("download_url", "")
+    if not recording or not recording.get("download_url"):
+        flash(
+            "No recording was found for this meeting. It may not have been recorded, "
+            "or it was saved somewhere the app can't reach (e.g. a channel's SharePoint site).",
+            "warning",
+        )
+        return redirect(back_url)
+
+    join_url = (meeting.get("onlineMeeting") or {}).get("joinUrl", "")
+    return render_template(
+        "recording.html",
+        meeting=meeting,
+        recording=recording,
+        transcript_url=url_for(
+            "main.transcript", event_id=meeting["id"], join_url=join_url, back=back_url
+        ),
+        back_url=back_url,
+    )
+
+
+@main_bp.route("/meetings/teams/recording/stream")
+@login_required
+def teams_recording_stream():
+    """
+    Proxy a recordings-API video to the browser (Graph has no pre-authenticated URL for
+    these). Only serves entries the signed-in user's own calendar lookup put in the session.
+    """
+    event_id = request.args.get("event_id", "")
+    entry = session.get("recording_map", {}).get(event_id)
+    if not entry or entry.get("kind") != "api":
+        return Response("Recording not available.", status=404)
+
+    app_token = get_app_token()
+    if not app_token:
+        return Response("Recording temporarily unavailable.", status=503)
+
+    upstream = GraphClient(app_token).open_recording_stream(
+        entry["user_id"], entry["meeting_id"], entry["recording_id"],
+        range_header=request.headers.get("Range"),
+    )
+    if upstream is None:
+        return Response("Recording could not be loaded.", status=502)
+
+    headers = {
+        k: upstream.headers[k]
+        for k in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges")
+        if k in upstream.headers
+    }
+    headers.setdefault("Content-Type", "video/mp4")
+    headers.setdefault("Accept-Ranges", "bytes")
+    if request.args.get("download") == "1":
+        headers["Content-Disposition"] = 'attachment; filename="meeting-recording.mp4"'
+
+    def generate():
+        try:
+            for chunk in upstream.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    return Response(stream_with_context(generate()), status=upstream.status_code, headers=headers)
 
 
 @main_bp.route("/transcript/parse-file", methods=["POST"])
@@ -920,8 +1201,12 @@ def admin_user_meetings(user_email):
             for meeting in meetings:
                 meeting["has_transcript"] = _match_recording(meeting, all_recordings)
 
-    except Exception as e:
-        error = f"Error fetching meetings for {user_email}: {str(e)}"
+    except Exception:
+        logger.exception("admin_user_meetings fetch failed for %s", user_email)
+        error = (
+            f"Couldn't load Microsoft meetings for {user_email}. The account may not exist "
+            "in this Microsoft 365 tenant, or the app lacks permission to read its calendar."
+        )
         meetings = []
 
     from app.models import MOMSent, User as UserModel
@@ -1059,6 +1344,8 @@ def zoom_transcript():
         transcript_text=transcript_text,
         attendees_json=json.dumps(attendees),
         error=None,
+        back_url=url_for("main.zoom_dashboard"),
+        back_label="Zoom Meetings",
     )
 
 

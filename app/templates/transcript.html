@@ -2,95 +2,124 @@
 {% block title %}Transcript - {{ meeting.subject }} - MOM Generator{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-lg-10">
-        <!-- Breadcrumb -->
-        <nav aria-label="breadcrumb" class="mb-3">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item">
-                    <a href="{{ back_url if back_url else url_for('main.dashboard') }}">
-                        {{ back_label if back_label else 'Dashboard' }}
-                    </a>
-                </li>
-                <li class="breadcrumb-item active">Transcript</li>
-            </ol>
-        </nav>
+{% set back = back_url if back_url else url_for('main.teams_meetings') %}
+{% set back_name = back_label if back_label else 'Teams Meetings' %}
 
-        <div class="d-flex justify-content-between align-items-start mb-4">
-            <div>
-                <h3 class="fw-bold mb-1">{{ meeting.subject }}</h3>
-                <p class="text-muted mb-0">
-                    {{ meeting.start.dateTime[:10] }} &middot;
-                    {{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC
-                </p>
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ back }}">{{ back_name }}</a></li>
+        <li class="breadcrumb-item active">Transcript</li>
+    </ol>
+</nav>
+
+<form method="POST" action="{{ url_for('main.mom_builder') }}">
+    <input type="hidden" name="event_id" value="{{ meeting.id }}">
+    <input type="hidden" name="meeting_subject" value="{{ meeting.subject }}">
+    <input type="hidden" name="meeting_date" value="{{ meeting.start.dateTime[:10] }}">
+    <input type="hidden" name="meeting_time" value="{{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC">
+    <input type="hidden" name="attendees_json" value="{{ attendees_json }}">
+
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">{{ meeting.subject }}</h1>
+            <p class="page-subtitle">
+                <i class="bi bi-calendar3"></i> {{ meeting.start.dateTime | nice_date }}
+                &middot; {{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC
+            </p>
+        </div>
+        <div class="page-actions">
+            <a href="{{ back }}" class="btn btn-light-outline"><i class="bi bi-arrow-left"></i> Back</a>
+            <button type="submit" class="btn btn-primary">
+                Continue to MOM builder <i class="bi bi-arrow-right"></i>
+            </button>
+        </div>
+    </div>
+
+    <div class="row g-4">
+        <!-- Left: meeting info + upload -->
+        <div class="col-xl-4 col-lg-5">
+            <div class="sticky-panel d-grid gap-4">
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title-text"><i class="bi bi-info-circle text-primary"></i> Meeting details</span>
+                    </div>
+                    <div class="card-body">
+                        <dl class="detail-list">
+                            {% set org = meeting.get('organizer', {}).get('emailAddress', {}) %}
+                            {% if org %}
+                            <dt>Organizer</dt>
+                            <dd>{{ org.get('name') or org.get('address') }}
+                                {% if org.get('name') and org.get('address') %}<div class="text-muted small">{{ org.get('address') }}</div>{% endif %}
+                            </dd>
+                            {% endif %}
+                            <dt>Transcript</dt>
+                            <dd>
+                                {% if transcript_text %}
+                                <span class="status-pill status-ok">Loaded automatically</span>
+                                {% else %}
+                                <span class="status-pill status-manual">Not found &mdash; paste or upload</span>
+                                {% endif %}
+                            </dd>
+                            {% set atts = meeting.get('attendees', []) %}
+                            {% if atts %}
+                            <dt>Attendees ({{ atts | length }})</dt>
+                            <dd class="mb-0">
+                                {% for att in atts %}
+                                {% set ea = att.get('emailAddress', att) %}
+                                <span class="attendee-chip" title="{{ ea.get('address') or ea.get('email', '') }}">
+                                    {{ ea.get('name') or ea.get('address') or ea.get('email', '') }}
+                                </span>
+                                {% endfor %}
+                            </dd>
+                            {% endif %}
+                        </dl>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title-text"><i class="bi bi-upload text-primary"></i> Upload transcript file</span>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">
+                            Nothing loaded? Upload an exported transcript &mdash;
+                            <code>.txt</code>, <code>.vtt</code> or <code>.docx</code>, up to 10&nbsp;MB.
+                        </p>
+                        <input type="file" class="form-control" id="transcriptFile"
+                               accept=".txt,.vtt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+                        <div id="uploadStatus" class="text-muted small mt-2"></div>
+                        <div id="uploadError" class="alert alert-danger mt-3 mb-0 d-none py-2 small"></div>
+                    </div>
+                </div>
             </div>
         </div>
 
-<form method="POST" action="{{ url_for('main.mom_builder') }}">
-            <input type="hidden" name="event_id" value="{{ meeting.id }}">
-            <input type="hidden" name="meeting_subject" value="{{ meeting.subject }}">
-            <input type="hidden" name="meeting_date" value="{{ meeting.start.dateTime[:10] }}">
-            <input type="hidden" name="meeting_time" value="{{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC">
-            <input type="hidden" name="attendees_json" value="{{ attendees_json }}">
-
-            <!-- Upload file (TXT / VTT / DOCX) -->
-            <div class="card border-0 shadow-sm mb-4">
-                <div class="card-header bg-white border-bottom py-3">
-                    <span class="fw-semibold">
-                        <i class="bi bi-upload"></i> Upload transcript file
-                    </span>
+        <!-- Right: editor -->
+        <div class="col-xl-8 col-lg-7">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span class="card-title-text"><i class="bi bi-body-text text-primary"></i> Meeting transcript</span>
+                    <span class="status-pill status-sent d-none" id="editBadge">Edited</span>
                 </div>
-                <div class="card-body">
+                <div class="card-body d-flex flex-column">
                     <p class="text-muted small mb-3">
-                        If nothing loaded from Teams, upload a transcript you exported or saved.
-                        Supported: plain text (<code>.txt</code>), WebVTT (<code>.vtt</code>), or Word (<code>.docx</code>). Max 10&nbsp;MB.
+                        Review and edit the transcript before building the MOM. Remove anything that
+                        shouldn't reach the customer.
                     </p>
-                    <div class="d-flex flex-wrap align-items-center gap-2">
-                        <input type="file" class="form-control" id="transcriptFile"
-                               accept=".txt,.vtt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                               style="max-width: 28rem;">
-                        <span id="uploadStatus" class="text-muted small"></span>
-                    </div>
-                    <div id="uploadError" class="alert alert-danger mt-3 mb-0 d-none py-2 small"></div>
-                </div>
-            </div>
-
-            <!-- Transcript Editor -->
-            <div class="card border-0 shadow-sm mb-4">
-                <div class="card-header bg-white border-bottom py-3">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <span class="fw-semibold">
-                            <i class="bi bi-body-text"></i> Meeting Transcript
-                        </span>
-                        <span class="badge bg-success-subtle text-success" id="editBadge" style="display:none;">
-                            Edited
-                        </span>
+                    <textarea class="form-control font-monospace transcript-editor flex-grow-1" name="transcript"
+                              id="transcriptArea"
+                              placeholder="Paste notes or transcript text here, or upload a file.">{{ transcript_text }}</textarea>
+                    <div class="d-flex justify-content-between align-items-center mt-3">
+                        <span class="text-muted small"><span id="charCount">0</span> characters</span>
+                        <button type="submit" class="btn btn-primary">
+                            Continue to MOM builder <i class="bi bi-arrow-right"></i>
+                        </button>
                     </div>
                 </div>
-                <div class="card-body">
-                    {% if transcript_text %}
-                    <p class="text-muted small mb-3">
-                        Review and edit the transcript below. You can modify, remove, or add content
-                        before proceeding to build the MOM document.
-                    </p>
-                    {% endif %}
-                    <textarea class="form-control font-monospace" name="transcript"
-                              rows="20" id="transcriptArea"
-                              placeholder="Paste notes or transcript text here, or upload a file above.">{{ transcript_text }}</textarea>
-                </div>
             </div>
-
-            <div class="d-flex justify-content-between">
-                <a href="{{ back_url if back_url else url_for('main.dashboard') }}" class="btn btn-outline-secondary">
-                    <i class="bi bi-arrow-left"></i> Back to {{ back_label if back_label else 'Dashboard' }}
-                </a>
-                <button type="submit" class="btn btn-primary btn-lg">
-                    Proceed to MOM Builder <i class="bi bi-arrow-right"></i>
-                </button>
-            </div>
-        </form>
+        </div>
     </div>
-</div>
+</form>
 {% endblock %}
 
 {% block scripts %}
@@ -102,8 +131,13 @@
     var uploadStatus = document.getElementById('uploadStatus');
     var uploadError = document.getElementById('uploadError');
 
+    var charCount = document.getElementById('charCount');
+    function updateCount() { charCount.textContent = area.value.length.toLocaleString(); }
+    updateCount();
+
     area.addEventListener('input', function() {
-        badge.style.display = 'inline-block';
+        badge.classList.remove('d-none');
+        updateCount();
     });
 
     document.getElementById('transcriptFile').addEventListener('change', async function(e) {
@@ -142,7 +176,8 @@
             }
             if (data.text) {
                 area.value = data.text;
-                badge.style.display = 'inline-block';
+                badge.classList.remove('d-none');
+                updateCount();
                 uploadStatus.textContent = 'Loaded into editor.';
             }
         } catch (err) {

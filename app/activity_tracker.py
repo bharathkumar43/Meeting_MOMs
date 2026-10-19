@@ -101,11 +101,12 @@ def get_user_stats():
     return total_users, total_meetings, total_sent
 
 
-def get_pending_moms():
+def get_pending_moms(user_id: int | None = None):
     """
     Return unique meetings accessed but never sent.
     Groups by (user_id, subject, meeting_date) and keeps only
     the most recent access time — no duplicates.
+    Pass user_id to restrict the result to a single user.
     """
     sent_subq = db.session.query(
         MOMSent.user_id,
@@ -115,7 +116,7 @@ def get_pending_moms():
 
     latest_access = func.max(MeetingAccess.accessed_at).label("accessed_at")
 
-    pending = (
+    query = (
         db.session.query(
             MeetingAccess.subject,
             MeetingAccess.meeting_date,
@@ -133,7 +134,11 @@ def get_pending_moms():
             ),
         )
         .filter(sent_subq.c.user_id.is_(None))
-        .group_by(
+    )
+    if user_id is not None:
+        query = query.filter(MeetingAccess.user_id == user_id)
+    return (
+        query.group_by(
             MeetingAccess.user_id,
             MeetingAccess.subject,
             MeetingAccess.meeting_date,
@@ -143,7 +148,77 @@ def get_pending_moms():
         .order_by(latest_access.desc())
         .all()
     )
-    return pending
+
+
+def get_user_overview(email: str, recent_limit: int = 8) -> dict:
+    """
+    Personal activity summary for the signed-in user's overview dashboard.
+    Counts are distinct (subject, meeting_date) pairs, matching the admin stats.
+    """
+    overview = {
+        "user": None,
+        "opened": 0,
+        "sent": 0,
+        "pending": 0,
+        "opened_week": 0,
+        "sent_week": 0,
+        "completion": 0,
+        "pending_list": [],
+        "recent_sent": [],
+    }
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return overview
+
+    week_ago = datetime.utcnow() - timedelta(days=7)
+
+    def distinct_count(model, since=None) -> int:
+        query = db.session.query(model.subject, model.meeting_date).filter(
+            model.user_id == user.id
+        )
+        if since is not None:
+            time_col = model.accessed_at if model is MeetingAccess else model.sent_at
+            query = query.filter(time_col >= since)
+        return query.distinct().count()
+
+    pending_rows = get_pending_moms(user_id=user.id)
+
+    # MOMSent stores one row per recipient — group them into one entry per MOM
+    grouped: dict = {}
+    sent_rows = (
+        MOMSent.query.filter_by(user_id=user.id)
+        .order_by(MOMSent.sent_at.desc())
+        .limit(recent_limit * 6)
+        .all()
+    )
+    for row in sent_rows:
+        key = (row.subject, row.meeting_date)
+        if key not in grouped:
+            if len(grouped) >= recent_limit:
+                continue
+            grouped[key] = {
+                "subject": row.subject,
+                "meeting_date": row.meeting_date,
+                "sent_at": row.sent_at,
+                "recipients": [],
+            }
+        if row.sent_to not in grouped[key]["recipients"]:
+            grouped[key]["recipients"].append(row.sent_to)
+
+    opened = distinct_count(MeetingAccess)
+    sent = distinct_count(MOMSent)
+    overview.update({
+        "user": user,
+        "opened": opened,
+        "sent": sent,
+        "pending": len(pending_rows),
+        "opened_week": distinct_count(MeetingAccess, week_ago),
+        "sent_week": distinct_count(MOMSent, week_ago),
+        "completion": min(100, round(100 * sent / opened)) if opened else 0,
+        "pending_list": pending_rows[:recent_limit],
+        "recent_sent": list(grouped.values()),
+    })
+    return overview
 
 
 def get_sent_moms():

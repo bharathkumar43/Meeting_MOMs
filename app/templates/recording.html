@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Recording - {{ meeting.subject }} - MOM Generator{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ back_url }}">Teams Meetings</a></li>
+        <li class="breadcrumb-item active">Recording</li>
+    </ol>
+</nav>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">{{ meeting.subject }}</h1>
+        <p class="page-subtitle">
+            <i class="bi bi-calendar3"></i> {{ meeting.start.dateTime | nice_date }}
+            &middot; {{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC
+        </p>
+    </div>
+    <div class="page-actions">
+        <a href="{{ back_url }}" class="btn btn-light-outline"><i class="bi bi-arrow-left"></i> Back</a>
+        <a href="{{ transcript_url }}" class="btn btn-primary">
+            <i class="bi bi-file-text"></i> Transcript &amp; create MOM
+        </a>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-xl-9 col-lg-8">
+        <div class="card">
+            <video class="recording-player" controls preload="metadata" src="{{ recording.download_url }}">
+                Your browser can't play this video. Use the download button instead.
+            </video>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title-text"><i class="bi bi-camera-reels text-primary"></i> Recording</span>
+            </div>
+            <div class="card-body">
+                <dl class="detail-list">
+                    <dt>File</dt>
+                    <dd class="text-break">{{ recording.name }}</dd>
+                    {% if recording.size %}
+                    <dt>Size</dt>
+                    <dd>{{ (recording.size / 1048576) | round(1) }} MB</dd>
+                    {% endif %}
+                    {% if recording.created %}
+                    <dt>Saved</dt>
+                    <dd>{{ recording.created | nice_date }}</dd>
+                    {% endif %}
+                </dl>
+            </div>
+            <div class="card-body border-top d-grid gap-2">
+                <a href="{{ recording.file_download_url or recording.download_url }}" class="btn btn-outline-primary" download>
+                    <i class="bi bi-download"></i> Download
+                </a>
+                {% if recording.web_url %}
+                <a href="{{ recording.web_url }}" class="btn btn-light-outline" target="_blank" rel="noopener">
+                    <i class="bi bi-box-arrow-up-right"></i> Open in Microsoft Stream
+                </a>
+                {% endif %}
+                {% if recording.size %}
+                <p class="text-muted small mb-0">The playback link expires after about an hour; reload the page to refresh it.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

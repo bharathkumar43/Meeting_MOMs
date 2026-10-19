@@ -1,136 +1,222 @@
 {% extends "base.html" %}
-{% block title %}Dashboard - MOM Generator{% endblock %}
+{% block title %}Overview - MOM Generator{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-lg-10">
-        <div class="d-flex justify-content-between align-items-center mb-4">
+{% set first_name = (nav_user.name.split(' ')[0]) if nav_user.name else 'there' %}
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Welcome back, {{ first_name }}</h1>
+        <p class="page-subtitle">{{ date_presets.today | nice_date }} &middot; Here's where your Minutes of Meeting stand.</p>
+    </div>
+    <div class="page-actions">
+        <a href="{{ url_for('main.teams_meetings') }}" class="btn btn-primary">
+            <i class="bi bi-plus-lg"></i> Create a MOM
+        </a>
+    </div>
+</div>
+
+<!-- KPIs -->
+<div class="row g-3 mb-4">
+    <div class="col-sm-6 col-xl-3">
+        <div class="card kpi-card">
+            <span class="kpi-icon kpi-blue"><i class="bi bi-folder2-open"></i></span>
             <div>
-                <h3 class="fw-bold mb-1">Customer Meetings</h3>
-                <p class="text-muted mb-0">Select a meeting to generate Minutes of Meeting</p>
+                <div class="kpi-label">Meetings opened</div>
+                <div class="kpi-value">{{ overview.opened }}</div>
+                <div class="kpi-meta">{{ overview.opened_week }} in the last 7 days</div>
             </div>
         </div>
-
-        <!-- Filters -->
-        <div class="card border-0 shadow-sm mb-4">
-            <div class="card-body">
-                <form method="GET" action="{{ url_for('main.dashboard') }}" class="row g-3 align-items-end">
-                    <div class="col-md-3">
-                        <label class="form-label fw-semibold">From Date</label>
-                        <input type="date" class="form-control" name="start_date"
-                               value="{{ start_date }}" required>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label fw-semibold">To Date</label>
-                        <input type="date" class="form-control" name="end_date"
-                               value="{{ end_date }}" required>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label fw-semibold">Subject Filter (optional)</label>
-                        <input type="text" class="form-control" name="keyword"
-                               value="{{ keyword or '' }}"
-                               placeholder="e.g. Customer Call, Migration">
-                    </div>
-                    <div class="col-md-2">
-                        <button type="submit" class="btn btn-primary w-100">
-                            <i class="bi bi-search"></i> Search
-                        </button>
-                    </div>
-                </form>
+    </div>
+    <div class="col-sm-6 col-xl-3">
+        <div class="card kpi-card">
+            <span class="kpi-icon kpi-green"><i class="bi bi-send-check"></i></span>
+            <div>
+                <div class="kpi-label">MOMs sent</div>
+                <div class="kpi-value">{{ overview.sent }}</div>
+                <div class="kpi-meta">{{ overview.sent_week }} in the last 7 days</div>
             </div>
         </div>
-
-        <!-- Results -->
-        {% set total_count = meetings|length %}
-        {% set with_tx = meetings|selectattr('has_transcript', 'equalto', true)|list|length %}
-
-        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-            <span class="fw-semibold">
-                <i class="bi bi-camera-video"></i>
-                {{ total_count }} customer meeting{{ 's' if total_count != 1 }} found
-            </span>
-            <div class="d-flex align-items-center gap-2 flex-wrap">
-                <span class="badge bg-info-subtle text-info">
-                    Meetings with external attendees
-                </span>
-                {% if total_count %}
-                <span class="badge bg-success-subtle text-success">
-                    {{ with_tx }} with transcript
-                </span>
-                <span class="badge bg-secondary-subtle text-secondary">
-                    {{ total_count - with_tx }} manual
-                </span>
-                {% endif %}
+    </div>
+    <div class="col-sm-6 col-xl-3">
+        <div class="card kpi-card">
+            <span class="kpi-icon kpi-amber"><i class="bi bi-hourglass-split"></i></span>
+            <div>
+                <div class="kpi-label">Pending MOMs</div>
+                <div class="kpi-value">{{ overview.pending }}</div>
+                <div class="kpi-meta">Opened but not sent yet</div>
             </div>
         </div>
-
-        <div class="card border-0 shadow-sm">
-            <div class="card-body p-0">
-                {% if meetings %}
-                <div class="table-responsive">
-                    <table class="table table-hover align-middle mb-0">
-                        <thead class="table-light">
-                            <tr>
-                                <th class="ps-4">Meeting</th>
-                                <th>Date &amp; Time</th>
-                                <th>External Attendees</th>
-                                <th class="text-end pe-4">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for meeting in meetings %}
-                            {% set join_url = meeting.get('onlineMeeting', {}).get('joinUrl', '') %}
-                            <tr>
-                                <td class="ps-4">
-                                    <div class="fw-semibold">{{ meeting.subject }}</div>
-                                    <small class="text-muted">
-                                        {{ meeting.organizer.emailAddress.name }}
-                                    </small>
-                                </td>
-                                <td>
-                                    <div>{{ meeting.start.dateTime[:10] }}</div>
-                                    <small class="text-muted">
-                                        {{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC
-                                    </small>
-                                </td>
-                                <td>
-                                    {% for att in meeting.external_attendees[:3] %}
-                                    <span class="badge bg-primary-subtle text-primary me-1">
-                                        {{ att.name or att.email }}
-                                    </span>
-                                    {% endfor %}
-                                    {% if meeting.external_attendees|length > 3 %}
-                                    <span class="badge bg-secondary-subtle text-secondary">
-                                        +{{ meeting.external_attendees|length - 3 }} more
-                                    </span>
-                                    {% endif %}
-                                </td>
-                                <td class="text-end pe-4">
-                                    {% if meeting.has_transcript %}
-                                    <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=join_url, back=request.url) }}"
-                                       class="btn btn-sm btn-outline-primary">
-                                        <i class="bi bi-file-text"></i> View Transcript
-                                    </a>
-                                    {% else %}
-                                    <a href="{{ url_for('main.transcript', event_id=meeting.id, join_url=join_url, back=request.url) }}"
-                                       class="btn btn-sm btn-outline-secondary">
-                                        <i class="bi bi-pencil-square"></i> Create MOM
-                                    </a>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+    </div>
+    <div class="col-sm-6 col-xl-3">
+        <div class="card kpi-card">
+            <span class="kpi-icon kpi-violet"><i class="bi bi-percent"></i></span>
+            <div class="flex-grow-1">
+                <div class="kpi-label">Completion rate</div>
+                <div class="kpi-value">{{ overview.completion }}%</div>
+                <div class="progress progress-thin mt-2" role="progressbar" aria-label="Completion rate"
+                     aria-valuenow="{{ overview.completion }}" aria-valuemin="0" aria-valuemax="100">
+                    <div class="progress-bar" data-progress="{{ overview.completion }}"></div>
                 </div>
-                {% else %}
-                <div class="text-center py-5">
-                    <i class="bi bi-calendar-x display-4 text-muted"></i>
-                    <p class="text-muted mt-3">No customer meetings found for this date range.</p>
-                </div>
-                {% endif %}
             </div>
         </div>
     </div>
 </div>
+
+<div class="row g-4">
+    <!-- Pending MOMs -->
+    <div class="col-xl-8">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span class="card-title-text"><i class="bi bi-hourglass-split text-warning"></i> Pending MOMs</span>
+                {% if overview.pending > overview.pending_list | length %}
+                <span class="text-muted small">Latest {{ overview.pending_list | length }} of {{ overview.pending }}</span>
+                {% endif %}
+            </div>
+            {% if overview.pending_list %}
+            <div class="table-responsive">
+                <table class="table table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th>Meeting</th>
+                            <th>Meeting date</th>
+                            <th>Last opened</th>
+                            <th class="text-end">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for p in overview.pending_list %}
+                        <tr>
+                            <td><div class="meeting-subject">{{ p.subject }}</div></td>
+                            <td class="date-main">{{ p.meeting_date | nice_date }}</td>
+                            <td class="date-sub">{{ p.accessed_at.strftime('%d %b, %H:%M') }} UTC</td>
+                            <td class="text-end">
+                                <a class="btn btn-sm btn-outline-primary"
+                                   href="{{ url_for('main.teams_meetings', start_date=p.meeting_date, end_date=p.meeting_date) }}">
+                                    Find meeting <i class="bi bi-arrow-right"></i>
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <div class="empty-icon"><i class="bi bi-check2-all"></i></div>
+                <h6>You're all caught up</h6>
+                <p class="small mb-0">Every meeting you opened has a MOM sent.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Sources + account -->
+    <div class="col-xl-4">
+        <div class="card mb-4">
+            <div class="card-header">
+                <span class="card-title-text"><i class="bi bi-lightning-charge text-primary"></i> Start from a meeting</span>
+            </div>
+            <div class="card-body d-grid gap-2">
+                <a class="source-tile" href="{{ url_for('main.teams_meetings') }}">
+                    <span class="source-icon source-icon-lg source-teams"><i class="bi bi-microsoft-teams"></i></span>
+                    <div>
+                        <div class="tile-title">Microsoft Teams</div>
+                        <div class="tile-text">Customer meetings from your calendar</div>
+                    </div>
+                    <i class="bi bi-chevron-right"></i>
+                </a>
+                <a class="source-tile" href="{{ url_for('main.zoom_dashboard') }}">
+                    <span class="source-icon source-icon-lg source-zoom"><i class="bi bi-camera-video"></i></span>
+                    <div>
+                        <div class="tile-title">Zoom</div>
+                        <div class="tile-text">Cloud recordings and transcripts</div>
+                    </div>
+                    <i class="bi bi-chevron-right"></i>
+                </a>
+                <a class="source-tile" href="{{ url_for('main.google_dashboard') }}">
+                    <span class="source-icon source-icon-lg source-google"><i class="bi bi-google"></i></span>
+                    <div>
+                        <div class="tile-title">Google Meet</div>
+                        <div class="tile-text">Meet invites on your calendar</div>
+                    </div>
+                    <i class="bi bi-chevron-right"></i>
+                </a>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body d-flex align-items-center gap-3">
+                <span class="avatar avatar-lg">{{ nav_user.initials }}</span>
+                <div class="min-w-0">
+                    <div class="fw-semibold">{{ nav_user.name }}</div>
+                    <div class="text-muted small text-truncate">{{ nav_user.email }}</div>
+                    {% if overview.user %}
+                    <div class="text-muted small mt-1">
+                        {{ overview.user.login_count }} sign-ins &middot; member since {{ overview.user.first_login.strftime('%b %Y') }}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recently sent -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title-text"><i class="bi bi-send-check text-success"></i> Recently sent</span>
+            </div>
+            {% if overview.recent_sent %}
+            <div class="table-responsive">
+                <table class="table table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th>Meeting</th>
+                            <th>Meeting date</th>
+                            <th>Sent to</th>
+                            <th>Sent</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in overview.recent_sent %}
+                        <tr>
+                            <td><div class="meeting-subject">{{ s.subject }}</div></td>
+                            <td class="date-main">{{ s.meeting_date | nice_date }}</td>
+                            <td>
+                                {% for r in s.recipients[:2] %}<span class="attendee-chip">{{ r }}</span>{% endfor %}
+                                {% if s.recipients | length > 2 %}
+                                <span class="attendee-more" data-bs-toggle="tooltip" title="{{ s.recipients[2:] | join(', ') }}">+{{ s.recipients | length - 2 }}</span>
+                                {% endif %}
+                            </td>
+                            <td class="date-sub">{{ s.sent_at.strftime('%d %b %Y, %H:%M') }} UTC</td>
+                            <td><span class="status-pill status-sent">Sent</span></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <div class="empty-icon"><i class="bi bi-inbox"></i></div>
+                <h6>No MOMs sent yet</h6>
+                <p class="small mb-3">Open a customer meeting to generate and send your first MOM.</p>
+                <a href="{{ url_for('main.teams_meetings') }}" class="btn btn-sm btn-primary">Browse Teams meetings</a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('[data-progress]').forEach(function (bar) {
+    bar.style.width = bar.dataset.progress + '%';
+});
+document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
+    bootstrap.Tooltip.getOrCreateInstance(el);
+});
+</script>
 {% endblock %}

@@ -2,19 +2,36 @@
 {% block title %}Upload Transcript – {{ meeting.subject }} - MOM Generator{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-lg-8">
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('main.google_dashboard') }}">Google Meet</a></li>
+        <li class="breadcrumb-item active">Provide transcript</li>
+    </ol>
+</nav>
 
-        <!-- Back link -->
-        <a href="{{ url_for('main.google_dashboard') }}" class="btn btn-sm btn-outline-secondary mb-4">
-            <i class="bi bi-arrow-left me-1"></i>Back to Google Meetings
+<div class="page-header">
+    <div>
+        <h1 class="page-title">
+            <span class="source-icon source-google"><i class="bi bi-google"></i></span>
+            Provide the transcript
+        </h1>
+        <p class="page-subtitle">We couldn't find this meeting's transcript automatically.</p>
+    </div>
+    <div class="page-actions">
+        <a href="{{ url_for('main.google_dashboard') }}" class="btn btn-light-outline">
+            <i class="bi bi-arrow-left"></i> Back to Google Meet
         </a>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-xl-4 col-lg-5">
 
         <!-- Meeting summary card -->
-        <div class="card border-0 shadow-sm mb-4">
+        <div class="card mb-4">
             <div class="card-body">
                 <div class="d-flex align-items-start gap-3">
-                    <span class="badge bg-danger-subtle text-danger fs-6 px-3 py-2 mt-1">Google</span>
+                    <span class="source-icon source-google"><i class="bi bi-google"></i></span>
                     <div>
                         <h5 class="fw-bold mb-1">{{ meeting.subject }}</h5>
                         <div class="text-muted small">
@@ -62,8 +79,10 @@
             </div>
         </div>
 
+    </div>
+    <div class="col-xl-8 col-lg-7">
         <!-- Transcript upload form -->
-        <div class="card border-0 shadow-sm">
+        <div class="card">
             <div class="card-body p-4">
                 <h6 class="fw-semibold mb-3">Provide Transcript</h6>
 
@@ -108,7 +127,7 @@ John Smith: Sure, let's start with the current blockers…"></textarea>
                     <div id="file_area" class="d-none mb-3">
                         <div class="border rounded p-4 text-center bg-light">
                             <i class="bi bi-file-earmark-text display-5 text-muted mb-2 d-block"></i>
-                            <label class="btn btn-outline-danger" for="transcript_file_input">
+                            <label class="btn btn-outline-primary" for="transcript_file_input">
                                 <i class="bi bi-upload me-1"></i>Choose file
                             </label>
                             <input type="file" id="transcript_file_input" name="transcript_file"
@@ -119,7 +138,7 @@ John Smith: Sure, let's start with the current blockers…"></textarea>
                     </div>
 
                     <div class="d-grid">
-                        <button type="submit" class="btn btn-danger btn-lg">
+                        <button type="submit" class="btn btn-primary btn-lg">
                             <i class="bi bi-file-text me-2"></i>Load Transcript &amp; Preview MOM
                         </button>
                     </div>

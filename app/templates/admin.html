@@ -100,54 +100,33 @@
 {% endmacro %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-lg-11">
+<div class="page-header">
+    <div>
+        <h1 class="page-title">
+            <span class="source-icon kpi-blue"><i class="bi bi-shield-lock"></i></span>
+            Admin Dashboard
+        </h1>
+        <p class="page-subtitle">Track employee activity, pending MOMs and sent documents across the team.</p>
+    </div>
+</div>
 
-        <!-- Header -->
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <div>
-                <h3 class="fw-bold mb-1">
-                    <i class="bi bi-shield-lock text-primary"></i> Admin Dashboard
-                </h3>
-                <p class="text-muted mb-0">Track employee activity, pending MOMs, and sent documents.</p>
-            </div>
+<div class="row g-3 mb-4">
+    {% set kpis = [
+        ('Employees', total_users, 'bi-people', 'kpi-blue'),
+        ('Meetings accessed', total_meetings, 'bi-folder2-open', 'kpi-violet'),
+        ('MOMs sent', total_sent, 'bi-send-check', 'kpi-green'),
+        ('MOMs pending', total_pending, 'bi-hourglass-split', 'kpi-amber'),
+        ('Total logins', users | selectattr('login_count') | list | sum(attribute='login_count'), 'bi-box-arrow-in-right', 'kpi-red'),
+    ] %}
+    {% for label, value, icon, tone in kpis %}
+    <div class="col-sm-6 col-lg">
+        <div class="card kpi-card">
+            <span class="kpi-icon {{ tone }}"><i class="bi {{ icon }}"></i></span>
+            <div><div class="kpi-label">{{ label }}</div><div class="kpi-value">{{ value }}</div></div>
         </div>
-
-        <!-- Summary Cards -->
-        <div class="row g-3 mb-4">
-            <div class="col-sm-6 col-lg">
-                <div class="card border-0 shadow-sm text-center py-3">
-                    <div class="fs-1 fw-bold text-primary">{{ total_users }}</div>
-                    <div class="text-muted small">Employees</div>
-                </div>
-            </div>
-            <div class="col-sm-6 col-lg">
-                <div class="card border-0 shadow-sm text-center py-3">
-                    <div class="fs-1 fw-bold text-info">{{ total_meetings }}</div>
-                    <div class="text-muted small">Meetings Accessed</div>
-                </div>
-            </div>
-            <div class="col-sm-6 col-lg">
-                <div class="card border-0 shadow-sm text-center py-3">
-                    <div class="fs-1 fw-bold text-success">{{ total_sent }}</div>
-                    <div class="text-muted small">MOMs Sent</div>
-                </div>
-            </div>
-            <div class="col-sm-6 col-lg">
-                <div class="card border-0 shadow-sm text-center py-3">
-                    <div class="fs-1 fw-bold text-danger">{{ total_pending }}</div>
-                    <div class="text-muted small">MOMs Pending</div>
-                </div>
-            </div>
-            <div class="col-sm-6 col-lg">
-                <div class="card border-0 shadow-sm text-center py-3">
-                    <div class="fs-1 fw-bold text-warning">
-                        {{ users | selectattr('login_count') | list | sum(attribute='login_count') }}
-                    </div>
-                    <div class="text-muted small">Total Logins</div>
-                </div>
-            </div>
-        </div>
+    </div>
+    {% endfor %}
+</div>
 
         <!-- Tabs -->
         <ul class="nav nav-tabs mb-4" id="adminTabs" role="tablist">
@@ -593,9 +572,6 @@
             </div>
 
         </div>
-
-    </div>
-</div>
 {% endblock %}
 
 {% block scripts %}

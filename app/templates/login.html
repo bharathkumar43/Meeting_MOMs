@@ -1,30 +1,94 @@
 {% extends "base.html" %}
-{% block title %}Sign In - MOM Generator{% endblock %}
+{% block title %}Sign in - MOM Generator{% endblock %}
 
-{% block content %}
-<div class="row justify-content-center align-items-center" style="min-height: 70vh;">
-    <div class="col-md-5">
-        <div class="card shadow-lg border-0">
-            <div class="card-body p-5 text-center">
-                <div class="mb-4">
-                    <i class="bi bi-journal-check display-1 text-primary"></i>
-                </div>
-                <h2 class="fw-bold mb-2">Meeting MOM Generator</h2>
-                <p class="text-muted mb-4">
-                    Generate and send professional Minutes of Meeting documents
-                    to your customers directly from Microsoft Teams transcripts.
-                </p>
-                <a href="{{ url_for('main.login') }}" class="btn btn-primary btn-lg w-100 d-flex align-items-center justify-content-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 23 23" fill="currentColor">
-                        <path d="M0 0h11v11H0zM12 0h11v11H12zM0 12h11v11H0zM12 12h11v11H12z"/>
-                    </svg>
-                    Sign in with Microsoft
-                </a>
-                <p class="text-muted small mt-4 mb-0">
-                    Only authorized migration managers can access this application.
-                </p>
-            </div>
+{% block body %}
+<div class="login-shell">
+
+    <!-- Left half: brand -->
+    <section class="login-brand">
+        <div>
+            <span class="login-brand-logo">
+                <img src="{{ url_for('static', filename='cloudfuze_logo.png') }}" alt="CloudFuze">
+            </span>
         </div>
-    </div>
+
+        <div>
+            <h1 class="mb-3">Turn every customer meeting into polished Minutes of Meeting.</h1>
+            <p class="lead mb-0">
+                Pull transcripts, let AI draft the summary, decisions and action items,
+                then send a branded MOM to your customer in minutes.
+            </p>
+
+            <ul class="login-features">
+                <li>
+                    <span class="feat-icon"><i class="bi bi-cloud-download"></i></span>
+                    <div>
+                        <strong>Transcripts, fetched for you</strong>
+                        <span>Pulled straight from Microsoft Teams, Zoom cloud recordings and Google Meet.</span>
+                    </div>
+                </li>
+                <li>
+                    <span class="feat-icon"><i class="bi bi-stars"></i></span>
+                    <div>
+                        <strong>AI-drafted, human-approved</strong>
+                        <span>Review and edit every summary point and action item before anything is sent.</span>
+                    </div>
+                </li>
+                <li>
+                    <span class="feat-icon"><i class="bi bi-send-check"></i></span>
+                    <div>
+                        <strong>Send from your own mailbox</strong>
+                        <span>Word or PDF, delivered through Outlook to your customer and team.</span>
+                    </div>
+                </li>
+            </ul>
+        </div>
+
+        <div class="login-sources">
+            <span class="src"><i class="bi bi-microsoft-teams"></i> Microsoft Teams</span>
+            <span class="src"><i class="bi bi-camera-video"></i> Zoom</span>
+            <span class="src"><i class="bi bi-google"></i> Google Meet</span>
+        </div>
+    </section>
+
+    <!-- Right half: sign in -->
+    <section class="login-panel">
+        <div class="login-card">
+            <h2 class="mb-2">Welcome back</h2>
+            <p class="text-muted mb-4">Sign in with your CloudFuze Microsoft 365 account to continue.</p>
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show small" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+            {% endfor %}
+            {% endwith %}
+
+            <a href="{{ url_for('main.login') }}" class="btn-microsoft">
+                <svg xmlns="http://www.w3.org/2000/svg" width="21" height="21" viewBox="0 0 21 21" aria-hidden="true">
+                    <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+                    <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+                    <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+                    <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+                </svg>
+                Sign in with Microsoft
+            </a>
+
+            <div class="login-divider">Secure single sign-on</div>
+
+            <div class="login-note">
+                <i class="bi bi-shield-lock text-primary fs-5"></i>
+                <div>
+                    Access is limited to authorized CloudFuze employees.
+                    You'll be redirected to Microsoft to sign in, and we only request the
+                    permissions needed to read your meetings and send MOMs.
+                </div>
+            </div>
+
+            <p class="text-muted small mt-4 mb-0">&copy; CloudFuze, Inc.</p>
+        </div>
+    </section>
 </div>
 {% endblock %}

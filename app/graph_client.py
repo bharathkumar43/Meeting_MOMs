@@ -1,9 +1,10 @@
 import base64
+import json
 import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 import requests
 from config import Config
 
@@ -29,6 +30,28 @@ class GraphClient:
             "Content-Type": "application/json",
         }
         self.base_url = Config.GRAPH_API_BASE
+        self._uid_cache: dict[str, str | None] = {}
+
+    @staticmethod
+    def organizer_id_from_join_url(join_url: str) -> str | None:
+        """
+        Return the real organizer's Entra object ID ("Oid") from a Teams join link.
+        Channel meetings show a group mailbox as the calendar organizer, which can't be
+        used for onlineMeeting lookups; the Oid in the link's context is the actual owner.
+        """
+        if not join_url:
+            return None
+        match = re.search(r"context=(\{.*?\})", unquote(unquote(join_url)))
+        if not match:
+            return None
+        try:
+            oid = json.loads(match.group(1)).get("Oid", "")
+        except ValueError:
+            return None
+        # Only accept a GUID — it is placed into a URL path later
+        if re.fullmatch(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}", oid or ""):
+            return oid
+        return None
 
     def get_user_profile(self):
         """Get the signed-in user's profile."""
@@ -128,6 +151,51 @@ class GraphClient:
             logger.warning("list_transcripts: %d - %s", resp.status_code, resp.text[:200])
             return []
         return resp.json().get("value", [])
+
+    def list_meeting_recordings(self, meeting_id: str, user_id: str) -> list[dict]:
+        """
+        Recordings attached to an online meeting, regardless of who clicked Record or
+        where Teams stored the file. Needs OnlineMeetingRecording.Read.All (application)
+        and the Teams application access policy.
+        """
+        try:
+            resp = requests.get(
+                f"{self.base_url}/users/{quote(user_id, safe='')}/onlineMeetings/"
+                f"{quote(meeting_id, safe='')}/recordings",
+                headers=self.headers,
+                timeout=30,
+            )
+        except requests.RequestException as e:
+            logger.warning("list_meeting_recordings failed: %s", e)
+            return []
+        if resp.status_code != 200:
+            logger.warning("list_meeting_recordings: %d - %s", resp.status_code, resp.text[:200])
+            return []
+        return resp.json().get("value", [])
+
+    def open_recording_stream(
+        self, user_id: str, meeting_id: str, recording_id: str, range_header: str | None = None
+    ) -> requests.Response | None:
+        """Open a streaming download of a meeting recording; forwards Range for seeking."""
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        if range_header:
+            headers["Range"] = range_header
+        try:
+            resp = requests.get(
+                f"{self.base_url}/users/{quote(user_id, safe='')}/onlineMeetings/"
+                f"{quote(meeting_id, safe='')}/recordings/{quote(recording_id, safe='')}/content",
+                headers=headers,
+                stream=True,
+                timeout=60,
+            )
+        except requests.RequestException as e:
+            logger.warning("open_recording_stream failed: %s", e)
+            return None
+        if resp.status_code not in (200, 206):
+            logger.warning("open_recording_stream: HTTP %d", resp.status_code)
+            resp.close()
+            return None
+        return resp
 
     def check_transcript_exists(self, join_url):
         """
@@ -417,7 +485,7 @@ class GraphClient:
                 resp = requests.get(
                     f"{self.base_url}/users/{user_id}/drive/root/search(q='Meeting Recording')",
                     headers=self.headers,
-                    params={"$select": "name,createdDateTime", "$top": 200},
+                    params={"$select": "id,name,createdDateTime", "$top": 200},
                 )
                 if resp.status_code == 429:
                     wait = _parse_retry_after(resp)
@@ -439,6 +507,8 @@ class GraphClient:
                             "subject": match.group(1).strip(),
                             "date": match.group(2),
                             "time": match.group(3),
+                            "item_id": f.get("id", ""),
+                            "user_id": user_id,
                         })
                 return recordings
             except Exception as e:
@@ -447,7 +517,15 @@ class GraphClient:
         return []
 
     def _resolve_user_id_safe(self, email):
-        """Resolve email to user ID, returning None on failure."""
+        """Resolve email to user ID, returning None on failure. Cached per client."""
+        key = (email or "").lower()
+        if key in self._uid_cache:
+            return self._uid_cache[key]
+        uid = self._resolve_user_id_uncached(email)
+        self._uid_cache[key] = uid
+        return uid
+
+    def _resolve_user_id_uncached(self, email):
         try:
             resp = requests.get(
                 f"{self.base_url}/users/{email}",
@@ -482,6 +560,12 @@ class GraphClient:
         user_ids_to_search.add(user_id)
 
         for m in meetings:
+            # Real organizer from the join link (covers channel meetings)
+            oid = self.organizer_id_from_join_url(
+                (m.get("onlineMeeting") or {}).get("joinUrl", "")
+            )
+            if oid:
+                user_ids_to_search.add(oid)
             org_email = (
                 m.get("organizer", {}).get("emailAddress", {}).get("address", "")
             ).lower()
@@ -599,6 +683,33 @@ class GraphClient:
                 logger.warning("OneDrive transcript search error for %s: %s", user_id, e)
                 return []
         return []
+
+    def get_recording_file(self, user_id: str, item_id: str) -> dict | None:
+        """
+        Metadata for a recording in a user's OneDrive, including a short-lived
+        pre-authenticated download URL the browser can stream directly (supports seeking).
+        """
+        try:
+            # No $select: Graph omits @microsoft.graph.downloadUrl when $select is used
+            resp = requests.get(
+                f"{self.base_url}/users/{quote(user_id)}/drive/items/{quote(item_id)}",
+                headers=self.headers,
+                timeout=30,
+            )
+        except requests.RequestException as e:
+            logger.warning("get_recording_file failed for %s/%s: %s", user_id, item_id, e)
+            return None
+        if resp.status_code != 200:
+            logger.warning("get_recording_file: HTTP %d for user=%s", resp.status_code, user_id)
+            return None
+        data = resp.json()
+        return {
+            "name": data.get("name", ""),
+            "size": data.get("size", 0),
+            "web_url": data.get("webUrl", ""),
+            "created": data.get("createdDateTime", ""),
+            "download_url": data.get("@microsoft.graph.downloadUrl", ""),
+        }
 
     def get_onedrive_file_content(self, user_id: str, item_id: str) -> bytes | None:
         """

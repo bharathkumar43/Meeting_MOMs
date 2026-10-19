@@ -2,26 +2,25 @@
 {% block title %}MOM Builder - {{ meeting_subject }} - MOM Generator{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-lg-10">
-        <!-- Breadcrumb -->
-        <nav aria-label="breadcrumb" class="mb-3">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
-                <li class="breadcrumb-item">Transcript</li>
-                <li class="breadcrumb-item active">MOM Builder</li>
-            </ol>
-        </nav>
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Overview</a></li>
+        <li class="breadcrumb-item"><a href="#" onclick="history.back(); return false;">Transcript</a></li>
+        <li class="breadcrumb-item active">MOM builder</li>
+    </ol>
+</nav>
 
-        <div class="d-flex align-items-center gap-2 mb-1">
-            <h3 class="fw-bold mb-0">Build Minutes of Meeting</h3>
+<div class="page-header">
+    <div>
+        <h1 class="page-title">
+            Build Minutes of Meeting
             {% if ai_tldr or ai_discussion_points or ai_action_items or ai_decisions %}
-            <span class="badge bg-success-subtle text-success px-2 py-1">
-                <i class="bi bi-stars"></i> AI Generated
-            </span>
+            <span class="status-pill status-sent fs-6"><i class="bi bi-stars"></i> AI drafted</span>
             {% endif %}
-        </div>
-        <p class="text-muted mb-4">{{ meeting_subject }} &middot; {{ meeting_date }}</p>
+        </h1>
+        <p class="page-subtitle">{{ meeting_subject }} &middot; {{ meeting_date | nice_date }}</p>
+    </div>
+</div>
 
         <form method="POST" action="{{ url_for('main.send_page') }}" id="momForm">
             <input type="hidden" name="meeting_subject" value="{{ meeting_subject }}">
@@ -30,6 +29,8 @@
             <input type="hidden" name="attendees_json" value="{{ attendees_json }}">
             <input type="hidden" name="transcript" value="{{ transcript }}">
 
+        <div class="row g-4">
+        <div class="col-xl-8 col-lg-7">
             <!-- Meeting Details -->
             <div class="card border-0 shadow-sm mb-4">
                 <div class="card-header bg-white border-bottom py-3">
@@ -174,31 +175,46 @@
                 </div>
             </div>
 
-            <!-- Include Transcript Toggle -->
-            <div class="card border-0 shadow-sm mb-4">
-                <div class="card-body d-flex align-items-center justify-content-between">
-                    <div>
-                        <span class="fw-semibold">Include full transcript in document</span>
-                        <br><small class="text-muted">Appends the meeting transcript at the end of the MOM document</small>
+        </div>
+
+        <!-- Right: sticky summary + actions -->
+        <div class="col-xl-4 col-lg-5">
+            <div class="sticky-panel d-grid gap-4">
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title-text"><i class="bi bi-clipboard-check text-primary"></i> Ready to send?</span>
                     </div>
-                    <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" name="include_transcript"
-                               id="includeTranscript" style="transform: scale(1.3);">
+                    <div class="card-body">
+                        <dl class="detail-list">
+                            <dt>Meeting</dt>
+                            <dd>{{ meeting_subject }}</dd>
+                            <dt>When</dt>
+                            <dd>{{ meeting_date | nice_date }}{% if meeting_time %}<div class="text-muted small">{{ meeting_time }}</div>{% endif %}</dd>
+                        </dl>
+                        <div class="d-flex justify-content-between align-items-center gap-3 border-top pt-3">
+                            <label class="mb-0" for="includeTranscript">
+                                <span class="fw-semibold d-block">Include full transcript</span>
+                                <small class="text-muted">Appended at the end of the document</small>
+                            </label>
+                            <div class="form-check form-switch form-switch-lg mb-0">
+                                <input class="form-check-input" type="checkbox" name="include_transcript"
+                                       id="includeTranscript">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body border-top d-grid gap-2">
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            Preview &amp; send <i class="bi bi-arrow-right"></i>
+                        </button>
+                        <button type="button" class="btn btn-light-outline" onclick="history.back()">
+                            <i class="bi bi-arrow-left"></i> Back to transcript
+                        </button>
                     </div>
                 </div>
             </div>
-
-            <div class="d-flex justify-content-between">
-                <button type="button" class="btn btn-outline-secondary" onclick="history.back()">
-                    <i class="bi bi-arrow-left"></i> Back to Transcript
-                </button>
-                <button type="submit" class="btn btn-primary btn-lg">
-                    Preview &amp; Send <i class="bi bi-arrow-right"></i>
-                </button>
-            </div>
+        </div>
+        </div>
         </form>
-    </div>
-</div>
 {% endblock %}
 
 {% block scripts %}

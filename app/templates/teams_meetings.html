@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
+{% block title %}Teams Meetings - MOM Generator{% endblock %}
+
+{% block content %}
+{% set total_count = meetings | length %}
+{% set with_tx = meetings | selectattr('has_transcript', 'equalto', true) | list | length %}
+{% set with_video = meetings | selectattr('has_recording', 'equalto', true) | list | length %}
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">
+            <span class="source-icon source-teams"><i class="bi bi-microsoft-teams"></i></span>
+            Teams Meetings
+        </h1>
+        <p class="page-subtitle">Customer meetings from your Outlook calendar that include external attendees.</p>
+    </div>
+    <div class="page-actions">
+        <span class="status-pill status-ok">{{ with_tx }} with transcript</span>
+        <span class="status-pill status-sent">{{ with_video }} with video</span>
+        <span class="status-pill status-manual">{{ total_count - with_tx }} manual</span>
+    </div>
+</div>
+
+{{ ui.filter_bar('main.teams_meetings', start_date, end_date, keyword, show_video=True) }}
+
+{{ ui.results_meta(total_count, extra=(start_date | nice_date) ~ ' – ' ~ (end_date | nice_date)) }}
+
+<div class="card">
+    {% if meetings %}
+    <div class="table-responsive">
+        <table class="table table-hover align-middle" id="meetingsTable">
+            <thead>
+                <tr>
+                    <th>Meeting</th>
+                    <th>Date &amp; time</th>
+                    <th>External attendees</th>
+                    <th>Transcript</th>
+                    <th>Video</th>
+                    <th class="text-end">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for meeting in meetings %}
+                {% set join_url = meeting.get('onlineMeeting', {}).get('joinUrl', '') %}
+                {% set open_url = url_for('main.transcript', event_id=meeting.id, join_url=join_url, back=request.url) %}
+                <tr data-search="{{ ui.search_text(meeting) }}"
+                    data-status="{{ 'transcript' if meeting.has_transcript else 'manual' }}"
+                    data-video="{{ 'yes' if meeting.has_recording else 'no' }}">
+                    <td>
+                        <div class="meeting-cell">
+                            <span class="source-icon source-teams"><i class="bi bi-microsoft-teams"></i></span>
+                            <div>
+                                <div class="meeting-subject">{{ meeting.subject }}</div>
+                                <div class="meeting-sub">Organizer: {{ meeting.organizer.emailAddress.name or meeting.organizer.emailAddress.address }}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="date-main">{{ meeting.start.dateTime | nice_date }}</div>
+                        <div class="date-sub">{{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC</div>
+                    </td>
+                    <td>{{ ui.attendee_chips(meeting.external_attendees) }}</td>
+                    <td>
+                        {% if meeting.has_transcript %}
+                        <span class="status-pill status-ok">Available</span>
+                        {% else %}
+                        <span class="status-pill status-manual">Manual</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if meeting.has_recording %}
+                        <a href="{{ url_for('main.teams_recording', event_id=meeting.id) }}"
+                           class="btn btn-sm btn-light-outline">
+                            <i class="bi bi-play-circle"></i> Watch
+                        </a>
+                        {% else %}
+                        <span class="text-muted small">&mdash;</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-end">
+                        {% if meeting.has_transcript %}
+                        <a href="{{ open_url }}" class="btn btn-sm btn-primary">
+                            <i class="bi bi-file-text"></i> View transcript
+                        </a>
+                        {% else %}
+                        <a href="{{ open_url }}" class="btn btn-sm btn-outline-primary">
+                            <i class="bi bi-pencil-square"></i> Create MOM
+                        </a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {{ ui.no_match_row(6) }}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <div class="empty-icon"><i class="bi bi-calendar-x"></i></div>
+        <h6>No customer meetings in this range</h6>
+        <p class="small mb-3">Only Teams meetings with at least one attendee outside your organization are listed.</p>
+        <a class="btn btn-sm btn-outline-primary"
+           href="{{ url_for('main.teams_meetings', start_date=date_presets.presets[2][1], end_date=date_presets.today) }}">
+            Try the last 30 days
+        </a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/filters.js') }}"></script>
+{% endblock %}
