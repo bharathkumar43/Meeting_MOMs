@@ -12,9 +12,10 @@ from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 
-LOGO_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "static", "Clip path group.svg"
-)
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+# Pre-rendered 4x PNG of the SVG logo: no native Cairo library needed (Windows has none)
+LOGO_PNG_PATH = os.path.join(_STATIC_DIR, "cloudfuze_logo_doc.png")
+LOGO_PATH = os.path.join(_STATIC_DIR, "Clip path group.svg")
 
 
 def _add_horizontal_line(doc):
@@ -33,21 +34,35 @@ def _add_horizontal_line(doc):
     bottom.set(qn("w:color"), "2B579A")
 
 
-def _prepare_logo():
+_LOGO_CACHE: bytes | None = None
+
+
+def _prepare_logo() -> io.BytesIO | None:
     """
-    Convert the logo (SVG or PNG) to a flattened PNG on a white background
-    so it renders with full brightness in Word.
-    Returns an in-memory BytesIO stream.
+    Logo as a flattened PNG on a white background (renders at full brightness in Word).
+    Prefers the pre-rendered PNG; falls back to rendering the SVG with cairosvg, which
+    needs the native Cairo library. Returns None if neither is available so the MOM is
+    still generated, just without a logo. The result is cached for the process.
     """
+    global _LOGO_CACHE
+    if _LOGO_CACHE is not None:
+        return io.BytesIO(_LOGO_CACHE)
+
     from PIL import Image
 
-    if LOGO_PATH.lower().endswith(".svg"):
-        import cairosvg
+    if os.path.exists(LOGO_PNG_PATH):
+        img = Image.open(LOGO_PNG_PATH).convert("RGBA")
+    elif os.path.exists(LOGO_PATH):
+        try:
+            import cairosvg
 
-        png_bytes = cairosvg.svg2png(url=LOGO_PATH, dpi=300)
+            png_bytes = cairosvg.svg2png(url=LOGO_PATH, dpi=300)
+        except (ImportError, OSError):
+            logger.warning("Logo skipped: cairosvg/Cairo unavailable and no pre-rendered PNG")
+            return None
         img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     else:
-        img = Image.open(LOGO_PATH).convert("RGBA")
+        return None
 
     background = Image.new("RGBA", img.size, (255, 255, 255, 255))
     composite = Image.alpha_composite(background, img)
@@ -55,8 +70,8 @@ def _prepare_logo():
 
     buf = io.BytesIO()
     composite.save(buf, format="PNG", dpi=(300, 300))
-    buf.seek(0)
-    return buf
+    _LOGO_CACHE = buf.getvalue()
+    return io.BytesIO(_LOGO_CACHE)
 
 
 def _add_logo_to_header(doc):
@@ -76,8 +91,8 @@ def _add_logo_to_header(doc):
     header_para.paragraph_format.space_after = Pt(12)
 
     run = header_para.add_run()
-    if os.path.exists(LOGO_PATH):
-        logo_stream = _prepare_logo()
+    logo_stream = _prepare_logo()
+    if logo_stream is not None:
         run.add_picture(logo_stream, width=Inches(1.6))
 
 
