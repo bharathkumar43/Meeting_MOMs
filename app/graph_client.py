@@ -6,6 +6,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote, unquote
 import requests
+
+from app.ttl_cache import TTLCache
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,8 @@ _TIMEOUT = (5, 30)
 _LOOKUP_BUDGET_SECONDS = 25
 # Parallel OneDrive searches — kept low because bursts trigger Graph 429 throttling
 _LOOKUP_MAX_WORKERS = 3
+# Per-user OneDrive "Meeting Recording" search results; repeated lookups reuse them
+_RECORDING_SEARCH_CACHE = TTLCache(ttl_seconds=300)
 
 
 def _parse_retry_after(resp):
@@ -163,11 +167,13 @@ class GraphClient:
             return []
         return resp.json().get("value", [])
 
-    def list_meeting_recordings(self, meeting_id: str, user_id: str) -> list[dict]:
+    def list_meeting_recordings(self, meeting_id: str, user_id: str) -> list[dict] | None:
         """
         Recordings attached to an online meeting, regardless of who clicked Record or
         where Teams stored the file. Needs OnlineMeetingRecording.Read.All (application)
         and the Teams application access policy.
+        Returns None when the API call itself fails (e.g. 403 before the permission is
+        granted), so callers can tell "no recordings" apart from "couldn't check".
         """
         try:
             resp = requests.get(
@@ -178,10 +184,10 @@ class GraphClient:
             )
         except requests.RequestException as e:
             logger.warning("list_meeting_recordings failed: %s", e)
-            return []
+            return None
         if resp.status_code != 200:
             logger.warning("list_meeting_recordings: %d - %s", resp.status_code, resp.text[:200])
-            return []
+            return None
         return resp.json().get("value", [])
 
     def open_recording_stream(
@@ -491,12 +497,17 @@ class GraphClient:
         events = resp.json().get("value", [])
         return [e for e in events if e.get("isOnlineMeeting")]
 
-    def _search_user_recordings(self, user_id):
+    def _search_user_recordings(self, user_id, deadline: float | None = None):
         """
         Search a user's OneDrive for Teams recording files with retry on 429.
         Teams saves recordings as: Subject-YYYYMMDD_HHMMSS-Meeting Recording.mp4
         Special chars like | are stripped from filenames by the OS.
+        If deadline (time.monotonic() value) is set, gives up instead of waiting past it.
+        Successful results are cached per user for a few minutes.
         """
+        cached = _RECORDING_SEARCH_CACHE.get(user_id)
+        if cached is not None:
+            return cached
         for attempt in range(3):
             try:
                 resp = requests.get(
@@ -507,6 +518,11 @@ class GraphClient:
                 )
                 if resp.status_code == 429:
                     wait = _parse_retry_after(resp)
+                    if deadline is not None and time.monotonic() + wait > deadline:
+                        logger.warning(
+                            "Rate limited recording search for %s, giving up (time budget)", user_id
+                        )
+                        return []
                     logger.info("Rate limited searching %s, retrying in %ds", user_id, wait)
                     time.sleep(wait)
                     continue
@@ -528,6 +544,7 @@ class GraphClient:
                             "item_id": f.get("id", ""),
                             "user_id": user_id,
                         })
+                _RECORDING_SEARCH_CACHE.set(user_id, recordings)
                 return recordings
             except Exception as e:
                 logger.warning("OneDrive recording search error for %s: %s", user_id, e)
@@ -572,14 +589,16 @@ class GraphClient:
             logger.warning("_resolve_user_id_safe failed for %s: %s", email, e)
         return None
 
-    def build_recording_lookup(self, meetings, user_id, org_domain=""):
+    def build_recording_lookup(self, meetings, user_id, org_domain="",
+                               budget_seconds: float | None = None):
         """
         Search OneDrives of the viewed user and all distinct organizers
         for recording files. Only searches organizers (not all attendees)
-        to keep response times fast.
+        to keep response times fast. budget_seconds bounds throttling waits.
         """
         if not org_domain:
             org_domain = getattr(Config, "ORG_DOMAIN", "")
+        deadline = time.monotonic() + budget_seconds if budget_seconds else None
 
         emails_seen = set()
         user_ids_to_search = set()
@@ -597,15 +616,15 @@ class GraphClient:
             ).lower()
             if org_email and org_email.endswith(f"@{org_domain}") and org_email not in emails_seen:
                 emails_seen.add(org_email)
-                uid = self._resolve_user_id_safe(org_email)
+                uid = self._resolve_user_id_safe(org_email, deadline)
                 if uid:
                     user_ids_to_search.add(uid)
 
         logger.info("Recording lookup: searching %d user(s)", len(user_ids_to_search))
 
-        workers = min(len(user_ids_to_search), 4)
+        workers = min(len(user_ids_to_search), _LOOKUP_MAX_WORKERS)
         with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
-            futures = {pool.submit(self._search_user_recordings, uid): uid
+            futures = {pool.submit(self._search_user_recordings, uid, deadline): uid
                        for uid in user_ids_to_search}
             all_recordings = []
             for future in as_completed(futures):

@@ -1,6 +1,17 @@
+import threading
+
 import msal
-from flask import session, redirect, url_for, request
+from flask import g, session, redirect, url_for, request
 from config import Config
+
+# MSAL authority/discovery metadata, shared across requests. Without it every
+# ConfidentialClientApplication re-downloads it (~300 ms per construction).
+_HTTP_CACHE: dict = {}
+
+# One long-lived client for the app-only (client credentials) token; MSAL keeps that
+# token in its in-memory cache and only calls Azure again near expiry.
+_APP_ONLY_CLIENT = None
+_APP_ONLY_LOCK = threading.Lock()
 
 
 def _build_msal_app(cache=None):
@@ -9,6 +20,7 @@ def _build_msal_app(cache=None):
         authority=Config.AUTHORITY,
         client_credential=Config.AZURE_CLIENT_SECRET,
         token_cache=cache,
+        http_cache=_HTTP_CACHE,
     )
 
 
@@ -57,7 +69,14 @@ def process_auth_callback():
 
 
 def get_token():
-    """Get a valid access token, refreshing if necessary."""
+    """Get a valid access token, refreshing if necessary. Memoized per request."""
+    if "graph_user_token" in g:
+        return g.graph_user_token
+    g.graph_user_token = _get_token_uncached()
+    return g.graph_user_token
+
+
+def _get_token_uncached():
     cache = _load_cache()
     app = _build_msal_app(cache=cache)
 
@@ -83,7 +102,11 @@ def get_app_token():
     This token can access any user's data (for admin monitoring).
     Requires Application permissions configured in Azure AD.
     """
-    app = _build_msal_app()
+    global _APP_ONLY_CLIENT
+    with _APP_ONLY_LOCK:
+        if _APP_ONLY_CLIENT is None:
+            _APP_ONLY_CLIENT = _build_msal_app()
+        app = _APP_ONLY_CLIENT
     result = app.acquire_token_for_client(
         scopes=[Config.APP_SCOPE],
     )

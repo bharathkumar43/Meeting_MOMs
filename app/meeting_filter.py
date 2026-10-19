@@ -84,6 +84,44 @@ def parse_vtt_transcript(vtt_text):
     return entries
 
 
+def _vtt_time_to_seconds(value: str) -> float | None:
+    """'01:02:03.450' or '02:03.450' -> seconds."""
+    parts = value.strip().replace(",", ".").split(":")
+    try:
+        nums = [float(p) for p in parts]
+    except ValueError:
+        return None
+    if len(nums) == 3:
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    if len(nums) == 2:
+        return nums[0] * 60 + nums[1]
+    return None
+
+
+def transcript_view_lines(entries: list[dict]) -> list[dict]:
+    """
+    Parsed VTT entries -> lines for the timestamped transcript viewer:
+    [{"start": seconds, "clock": "12:45", "speaker": str, "text": str}].
+    Entries without a parsable cue start are skipped.
+    """
+    lines = []
+    for entry in entries:
+        start = _vtt_time_to_seconds((entry.get("timestamp") or "").split("-->")[0])
+        if start is None or not entry.get("text"):
+            continue
+        whole = int(start)
+        hours, rem = divmod(whole, 3600)
+        minutes, seconds = divmod(rem, 60)
+        clock = f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+        lines.append({
+            "start": round(start, 2),
+            "clock": clock,
+            "speaker": entry.get("speaker", "Unknown"),
+            "text": entry["text"],
+        })
+    return lines
+
+
 def transcript_to_readable(entries):
     """Convert parsed transcript entries into a readable text format."""
     lines = []

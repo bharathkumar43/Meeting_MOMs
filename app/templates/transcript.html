@@ -1,14 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Transcript - {{ meeting.subject }} - MOM Generator{% endblock %}
+{% block title %}{{ meeting.subject }} - MOM Generator{% endblock %}
 
 {% block content %}
 {% set back = back_url if back_url else url_for('main.teams_meetings') %}
 {% set back_name = back_label if back_label else 'Teams Meetings' %}
+{% set lines = transcript_lines or [] %}
+{% set org = meeting.get('organizer', {}).get('emailAddress', {}) %}
 
 <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
         <li class="breadcrumb-item"><a href="{{ back }}">{{ back_name }}</a></li>
-        <li class="breadcrumb-item active">Transcript</li>
+        <li class="breadcrumb-item active">Meeting</li>
     </ol>
 </nav>
 
@@ -20,101 +22,85 @@
     <input type="hidden" name="attendees_json" value="{{ attendees_json }}">
 
     <div class="page-header">
-        <div>
+        <div class="min-w-0">
             <h1 class="page-title">{{ meeting.subject }}</h1>
             <p class="page-subtitle">
-                <i class="bi bi-calendar3"></i> {{ meeting.start.dateTime | nice_date }}
-                &middot; {{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC
+                {{ meeting.start.dateTime | nice_date }} &middot;
+                {{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC
+                {% if org.get('name') or org.get('address') %}&middot; {{ org.get('name') or org.get('address') }}{% endif %}
             </p>
         </div>
         <div class="page-actions">
             <a href="{{ back }}" class="btn btn-light-outline"><i class="bi bi-arrow-left"></i> Back</a>
             <button type="submit" class="btn btn-primary">
-                Continue to MOM builder <i class="bi bi-arrow-right"></i>
+                Create MOM <i class="bi bi-arrow-right"></i>
             </button>
         </div>
     </div>
 
     <div class="row g-4">
-        <!-- Left: meeting info + upload -->
-        <div class="col-xl-4 col-lg-5">
-            <div class="sticky-panel d-grid gap-4">
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-title-text"><i class="bi bi-info-circle text-primary"></i> Meeting details</span>
-                    </div>
-                    <div class="card-body">
-                        <dl class="detail-list">
-                            {% set org = meeting.get('organizer', {}).get('emailAddress', {}) %}
-                            {% if org %}
-                            <dt>Organizer</dt>
-                            <dd>{{ org.get('name') or org.get('address') }}
-                                {% if org.get('name') and org.get('address') %}<div class="text-muted small">{{ org.get('address') }}</div>{% endif %}
-                            </dd>
-                            {% endif %}
-                            <dt>Transcript</dt>
-                            <dd>
-                                {% if transcript_text %}
-                                <span class="status-pill status-ok">Loaded automatically</span>
-                                {% else %}
-                                <span class="status-pill status-manual">Not found &mdash; paste or upload</span>
-                                {% endif %}
-                            </dd>
-                            {% set atts = meeting.get('attendees', []) %}
-                            {% if atts %}
-                            <dt>Attendees ({{ atts | length }})</dt>
-                            <dd class="mb-0">
-                                {% for att in atts %}
-                                {% set ea = att.get('emailAddress', att) %}
-                                <span class="attendee-chip" title="{{ ea.get('address') or ea.get('email', '') }}">
-                                    {{ ea.get('name') or ea.get('address') or ea.get('email', '') }}
-                                </span>
-                                {% endfor %}
-                            </dd>
-                            {% endif %}
-                        </dl>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-title-text"><i class="bi bi-upload text-primary"></i> Upload transcript file</span>
-                    </div>
-                    <div class="card-body">
-                        <p class="text-muted small mb-3">
-                            Nothing loaded? Upload an exported transcript &mdash;
-                            <code>.txt</code>, <code>.vtt</code> or <code>.docx</code>, up to 10&nbsp;MB.
-                        </p>
-                        <input type="file" class="form-control" id="transcriptFile"
-                               accept=".txt,.vtt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-                        <div id="uploadStatus" class="text-muted small mt-2"></div>
-                        <div id="uploadError" class="alert alert-danger mt-3 mb-0 d-none py-2 small"></div>
-                    </div>
+        {% if recording %}
+        <div class="col-xl-7">
+            <div class="card sticky-panel">
+                <video id="player" class="recording-player" controls preload="metadata" src="{{ recording.src }}">
+                    Your browser can't play this video.
+                </video>
+                <div class="card-body py-2 d-flex gap-3 small">
+                    <a href="{{ recording.download_url }}" download><i class="bi bi-download"></i> Download</a>
+                    {% if recording.web_url %}
+                    <a href="{{ recording.web_url }}" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right"></i> Open in Stream</a>
+                    {% endif %}
                 </div>
             </div>
         </div>
+        {% endif %}
 
-        <!-- Right: editor -->
-        <div class="col-xl-8 col-lg-7">
-            <div class="card h-100">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span class="card-title-text"><i class="bi bi-body-text text-primary"></i> Meeting transcript</span>
-                    <span class="status-pill status-sent d-none" id="editBadge">Edited</span>
-                </div>
-                <div class="card-body d-flex flex-column">
-                    <p class="text-muted small mb-3">
-                        Review and edit the transcript before building the MOM. Remove anything that
-                        shouldn't reach the customer.
-                    </p>
-                    <textarea class="form-control font-monospace transcript-editor flex-grow-1" name="transcript"
-                              id="transcriptArea"
-                              placeholder="Paste notes or transcript text here, or upload a file.">{{ transcript_text }}</textarea>
-                    <div class="d-flex justify-content-between align-items-center mt-3">
-                        <span class="text-muted small"><span id="charCount">0</span> characters</span>
-                        <button type="submit" class="btn btn-primary">
-                            Continue to MOM builder <i class="bi bi-arrow-right"></i>
+        <div class="{{ 'col-xl-5' if recording else 'col-12' }}">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center gap-2">
+                    <span class="card-title-text">
+                        <i class="bi bi-body-text text-primary"></i> Transcript
+                        <span class="status-pill status-sent d-none" id="editBadge">Edited</span>
+                    </span>
+                    <div class="d-flex gap-2">
+                        {% if lines %}
+                        <button type="button" class="btn btn-sm btn-light-outline" id="editToggle">
+                            <i class="bi bi-pencil"></i> Edit
                         </button>
+                        {% endif %}
+                        <label class="btn btn-sm btn-light-outline mb-0" for="transcriptFile" title="Upload .txt, .vtt or .docx (max 10 MB)">
+                            <i class="bi bi-upload"></i> Upload
+                        </label>
+                        <input type="file" class="d-none" id="transcriptFile"
+                               accept=".txt,.vtt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
                     </div>
+                </div>
+
+                {% if lines %}
+                <div class="tx-list {{ 'tx-list-media' if recording }}" id="txList">
+                    {% set ns = namespace(speaker=None) %}
+                    {% for line in lines %}
+                    <div class="tx-line {{ 'tx-seek' if recording }}" data-t="{{ line.start }}"
+                         {% if recording %}role="button" tabindex="0" title="Play from {{ line.clock }}"{% endif %}>
+                        <span class="tx-time">{{ line.clock }}</span>
+                        <div>
+                            {% if line.speaker != ns.speaker %}
+                            <div class="tx-speaker">{{ line.speaker }}</div>
+                            {% set ns.speaker = line.speaker %}
+                            {% endif %}
+                            <div class="tx-text">{{ line.text }}</div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                <div class="card-body {{ 'd-none' if lines }}" id="editorWrap">
+                    <textarea class="form-control font-monospace transcript-editor" name="transcript"
+                              id="transcriptArea"
+                              placeholder="No transcript found for this meeting. Paste notes or a transcript here, or use Upload.">{{ transcript_text }}</textarea>
+                    <div id="uploadStatus" class="text-muted small mt-2"></div>
+                    <div id="uploadError" class="alert alert-danger mt-2 mb-0 d-none py-2 small"></div>
                 </div>
             </div>
         </div>
@@ -124,61 +110,63 @@
 
 {% block scripts %}
 <script>
-(function() {
+(function () {
     var parseUrl = {{ url_for('main.parse_transcript_file') | tojson }};
     var area = document.getElementById('transcriptArea');
     var badge = document.getElementById('editBadge');
+    var editorWrap = document.getElementById('editorWrap');
+    var list = document.getElementById('txList');
+    var toggle = document.getElementById('editToggle');
     var uploadStatus = document.getElementById('uploadStatus');
     var uploadError = document.getElementById('uploadError');
+    var player = document.getElementById('player');
 
-    var charCount = document.getElementById('charCount');
-    function updateCount() { charCount.textContent = area.value.length.toLocaleString(); }
-    updateCount();
+    function showEditor(on) {
+        editorWrap.classList.toggle('d-none', !on);
+        if (list) { list.classList.toggle('d-none', on); }
+        if (toggle) {
+            toggle.innerHTML = on ? '<i class="bi bi-list-ul"></i> View' : '<i class="bi bi-pencil"></i> Edit';
+        }
+    }
 
-    area.addEventListener('input', function() {
-        badge.classList.remove('d-none');
-        updateCount();
-    });
+    if (toggle) {
+        toggle.addEventListener('click', function () { showEditor(editorWrap.classList.contains('d-none')); });
+    }
+    area.addEventListener('input', function () { badge.classList.remove('d-none'); });
 
-    document.getElementById('transcriptFile').addEventListener('change', async function(e) {
+    // Upload → replaces the transcript text and switches to the editor
+    document.getElementById('transcriptFile').addEventListener('change', async function (e) {
         var file = e.target.files && e.target.files[0];
         uploadError.classList.add('d-none');
-        uploadError.textContent = '';
         uploadStatus.textContent = '';
-        if (!file) return;
-
-        var name = file.name.toLowerCase();
-        var ok = /\.(txt|vtt|docx)$/.test(name);
-        if (!ok) {
+        if (!file) { return; }
+        if (!/\.(txt|vtt|docx)$/i.test(file.name)) {
+            showEditor(true);
             uploadError.textContent = 'Please choose a .txt, .vtt, or .docx file.';
             uploadError.classList.remove('d-none');
             e.target.value = '';
             return;
         }
-
+        showEditor(true);
         uploadStatus.textContent = 'Reading file…';
         var fd = new FormData();
         fd.append('file', file);
-
         try {
             var res = await fetch(parseUrl, {
-                method: 'POST',
-                body: fd,
-                credentials: 'same-origin',
+                method: 'POST', body: fd, credentials: 'same-origin',
                 headers: { 'X-Requested-With': 'XMLHttpRequest' }
             });
-            var data = await res.json().catch(function() { return {}; });
+            var data = await res.json().catch(function () { return {}; });
             if (!res.ok) {
                 uploadError.textContent = data.error || ('Request failed (' + res.status + ')');
                 uploadError.classList.remove('d-none');
                 uploadStatus.textContent = '';
-                return;
-            }
-            if (data.text) {
+            } else if (data.text) {
                 area.value = data.text;
                 badge.classList.remove('d-none');
-                updateCount();
-                uploadStatus.textContent = 'Loaded into editor.';
+                uploadStatus.textContent = 'Loaded “' + file.name + '”.';
+                if (toggle) { toggle.remove(); toggle = null; }
+                if (list) { list.remove(); list = null; }
             }
         } catch (err) {
             uploadError.textContent = 'Could not upload file. Check your connection and try again.';
@@ -186,6 +174,46 @@
             uploadStatus.textContent = '';
         }
         e.target.value = '';
+    });
+
+    if (!player || !list) { return; }
+
+    // Click a line → seek the video
+    var lines = Array.prototype.slice.call(list.querySelectorAll('.tx-line'));
+    var starts = lines.map(function (el) { return parseFloat(el.dataset.t) || 0; });
+    function seek(el) {
+        player.currentTime = parseFloat(el.dataset.t) || 0;
+        player.play().catch(function () {});
+    }
+    list.addEventListener('click', function (e) {
+        var el = e.target.closest('.tx-line');
+        if (el) { seek(el); }
+    });
+    list.addEventListener('keydown', function (e) {
+        var el = e.target.closest('.tx-line');
+        if (el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); seek(el); }
+    });
+
+    // Highlight the line being spoken; follow along unless the user is scrolling the list
+    var active = -1;
+    var userScrolledAt = 0;
+    list.addEventListener('wheel', function () { userScrolledAt = Date.now(); }, { passive: true });
+    list.addEventListener('touchmove', function () { userScrolledAt = Date.now(); }, { passive: true });
+    player.addEventListener('timeupdate', function () {
+        var t = player.currentTime, lo = 0, hi = starts.length - 1, idx = -1;
+        while (lo <= hi) {
+            var mid = (lo + hi) >> 1;
+            if (starts[mid] <= t) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        if (idx === active) { return; }
+        if (active >= 0) { lines[active].classList.remove('active'); }
+        active = idx;
+        if (idx < 0) { return; }
+        var el = lines[idx];
+        el.classList.add('active');
+        if (Date.now() - userScrolledAt > 4000) {
+            list.scrollTo({ top: el.offsetTop - list.offsetTop - 60, behavior: 'smooth' });
+        }
     });
 })();
 </script>

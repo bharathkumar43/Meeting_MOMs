@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from functools import wraps
@@ -18,11 +19,12 @@ from werkzeug.utils import secure_filename
 
 from app.auth import get_auth_url, process_auth_callback, get_token, get_app_token, logout as auth_logout
 from app.graph_client import GraphClient
+from app.ttl_cache import TTLCache
 from app.zoom_auth import get_zoom_access_token
 from app.zoom_client import ZoomClient
 from app.meeting_filter import (
     filter_customer_meetings, filter_by_subject,
-    parse_vtt_transcript, transcript_to_readable,
+    parse_vtt_transcript, transcript_to_readable, transcript_view_lines,
 )
 from app.doc_generator import generate_mom_document, convert_docx_to_pdf
 from app.email_sender import send_mom_email
@@ -245,6 +247,13 @@ def meeting_has_transcript_signal(
 
 
 _RECORDING_MAP_LIMIT = 300
+_ONEDRIVE_FALLBACK_BUDGET_SECONDS = 6
+
+# Calendar events the signed-in user's Teams page listed, keyed (email, event_id).
+# The status endpoint only answers for events in here, so a client can't probe others.
+_LISTED_MEETINGS = TTLCache(ttl_seconds=900)
+# Transcript/recording lookup results per calendar event (Graph via the app token).
+_MEDIA_CACHE = TTLCache(ttl_seconds=600)
 
 
 def _lookup_meeting_media(app_client, meeting, user_ids) -> dict:
@@ -252,7 +261,10 @@ def _lookup_meeting_media(app_client, meeting, user_ids) -> dict:
     Resolve the onlineMeeting via the first user ID that owns it, then report whether it has
     transcripts and return its newest recording (recordings API) as a session-map entry.
     """
-    result = {"has_transcript": False, "recording": None}
+    result = {
+        "has_transcript": False, "recording": None, "user_id": None,
+        "online_meeting_id": None, "recording_api_ok": False,
+    }
     join_url = (meeting.get("onlineMeeting") or {}).get("joinUrl", "")
     if not join_url:
         return result
@@ -261,10 +273,13 @@ def _lookup_meeting_media(app_client, meeting, user_ids) -> dict:
             online_meeting = app_client.get_online_meeting_for_user(uid, join_url)
             if not online_meeting:
                 continue
+            result["user_id"] = uid
+            result["online_meeting_id"] = online_meeting["id"]
             result["has_transcript"] = bool(
                 app_client.list_transcripts(online_meeting["id"], user_id=uid)
             )
             recs = app_client.list_meeting_recordings(online_meeting["id"], uid)
+            result["recording_api_ok"] = recs is not None
             if recs:
                 newest = max(recs, key=lambda r: r.get("createdDateTime", ""))
                 result["recording"] = {
@@ -280,51 +295,70 @@ def _lookup_meeting_media(app_client, meeting, user_ids) -> dict:
     return result
 
 
-def _annotate_teams_meetings(app_client, meetings, signed_in_user_id: str) -> None:
+def _media_for_meetings(app_client, meetings, signed_in_user_id: str) -> dict:
     """
-    Set has_transcript / has_recording on each meeting using real Graph lookups.
-    Transcripts: onlineMeeting transcript API via the organizer (app token + access policy).
-    Recordings: matching .mp4 in the organizer's / signed-in user's OneDrive.
-    Recording file IDs are kept server-side in the session, keyed by calendar event ID, so
-    the recording route only ever serves files matched to the user's own calendar.
+    {event_id: media result} for the given calendar events, using _MEDIA_CACHE.
+    Uncached events are looked up in parallel; events without an API recording get one
+    time-bounded OneDrive file search.
     """
-    signed_in_email = _current_user_email()
+    results = {m["id"]: _MEDIA_CACHE.get(m["id"]) for m in meetings}
+    todo = [m for m in meetings if results[m["id"]] is None]
 
-    def media(meeting) -> dict:
-        ids = _app_user_ids_for_transcript_lookup(
-            app_client, meeting, signed_in_email=signed_in_email
-        )
-        return _lookup_meeting_media(app_client, meeting, ids)
+    if todo:
+        signed_in_email = _current_user_email()
 
-    # Kept modest: Graph throttles (429) on bursts of parallel calls
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(media, meetings))
-
-    # OneDrive file search only for meetings the recordings API didn't cover
-    missing = [m for m, r in zip(meetings, results) if not r["recording"]]
-    recordings = []
-    if missing:
-        try:
-            recordings = app_client.build_recording_lookup(
-                missing, signed_in_user_id, Config.ORG_DOMAIN
+        def media(meeting) -> dict:
+            ids = _app_user_ids_for_transcript_lookup(
+                app_client, meeting, signed_in_email=signed_in_email
             )
-        except Exception:
-            logger.exception("Recording lookup failed")
+            return _lookup_meeting_media(app_client, meeting, ids)
 
-    recording_map = dict(session.get("recording_map", {}))
-    for meeting, result in zip(meetings, results):
-        meeting["has_transcript"] = result["has_transcript"]
-        entry = result["recording"]
-        if not entry:
-            rec = _find_recording(meeting, recordings)
-            if rec and rec.get("item_id"):
-                entry = {"kind": "onedrive", "user_id": rec["user_id"], "item_id": rec["item_id"]}
-        meeting["has_recording"] = entry is not None
-        if entry:
-            recording_map[meeting["id"]] = entry
+        # Kept modest: Graph throttles (429) on bursts of parallel calls
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            fresh = list(pool.map(media, todo))
 
-    # Keep the session small: newest entries win
-    session["recording_map"] = dict(list(recording_map.items())[-_RECORDING_MAP_LIMIT:])
+        # OneDrive search only where the recordings API couldn't answer (e.g. permission not
+        # yet active); when it answered "none", that's authoritative.
+        missing = [
+            m for m, r in zip(todo, fresh) if not r["recording"] and not r["recording_api_ok"]
+        ]
+        files = []
+        if missing and signed_in_user_id:
+            try:
+                files = app_client.build_recording_lookup(
+                    missing, signed_in_user_id, Config.ORG_DOMAIN,
+                    budget_seconds=_ONEDRIVE_FALLBACK_BUDGET_SECONDS,
+                )
+            except Exception:
+                logger.exception("Recording lookup failed")
+
+        for meeting, result in zip(todo, fresh):
+            if not result["recording"]:
+                rec = _find_recording(meeting, files)
+                if rec and rec.get("item_id"):
+                    result["recording"] = {
+                        "kind": "onedrive", "user_id": rec["user_id"], "item_id": rec["item_id"],
+                    }
+            _MEDIA_CACHE.set(meeting["id"], result)
+            results[meeting["id"]] = result
+
+    # Deliberately no session writes here: status batches run concurrently and would
+    # overwrite each other's session. The meeting page records the playable entry.
+    return results
+
+
+_USER_IDS = TTLCache(ttl_seconds=3600)
+
+
+def _signed_in_graph_user_id(client) -> str:
+    """Signed-in user's Graph ID, cached server-side by email (no session write)."""
+    email = _current_user_email()
+    uid = _USER_IDS.get(email)
+    if not uid:
+        uid = client.get_user_profile().get("id", "")
+        if uid:
+            _USER_IDS.set(email, uid)
+    return uid
 
 
 def login_required(f):
@@ -445,13 +479,13 @@ def teams_meetings():
             keywords = [k.strip() for k in keyword.split(",")]
             meetings = filter_by_subject(meetings, keywords)
 
-        app_token = get_app_token()
-        app_client = GraphClient(app_token) if app_token else None
-
-        if app_client and meetings:
-            dashboard_user_id = client.get_user_profile().get("id", "")
-            if dashboard_user_id:
-                _annotate_teams_meetings(app_client, meetings, dashboard_user_id)
+        email = _current_user_email()
+        for meeting in meetings:
+            _LISTED_MEETINGS.set((email, meeting["id"]), meeting)
+            cached = _MEDIA_CACHE.get(meeting["id"])
+            meeting["status_known"] = cached is not None
+            meeting["has_transcript"] = bool(cached and cached["has_transcript"])
+            meeting["has_recording"] = bool(cached and cached["recording"])
 
     except Exception:
         logger.exception("teams_meetings calendar fetch failed")
@@ -465,6 +499,41 @@ def teams_meetings():
         end_date=end_date,
         keyword=keyword,
     )
+
+
+@main_bp.route("/meetings/teams/status", methods=["POST"])
+@login_required
+def teams_meetings_status():
+    """Transcript/video availability for meetings the Teams page just listed (JSON)."""
+    if request.method != "POST" or not request.is_json:
+        return jsonify({"status": "error", "message": "Expected JSON."}), 400
+    ids = request.get_json(silent=True, force=True) or {}
+    ids = [i for i in ids.get("ids", []) if isinstance(i, str)][:25]
+
+    email = _current_user_email()
+    meetings = [m for m in (_LISTED_MEETINGS.get((email, i)) for i in ids) if m]
+    if not meetings:
+        return jsonify({"status": "ok", "data": {}}), 200
+
+    app_token = get_app_token()
+    if not app_token:
+        return jsonify({"status": "error", "message": "Status temporarily unavailable."}), 503
+    try:
+        client = GraphClient(get_token())
+        results = _media_for_meetings(
+            GraphClient(app_token), meetings, _signed_in_graph_user_id(client)
+        )
+    except Exception:
+        logger.exception("teams_meetings_status failed")
+        return jsonify({"status": "error", "message": "Could not check meetings."}), 502
+
+    return jsonify({"status": "ok", "data": {
+        event_id: {
+            "transcript": bool(r and r["has_transcript"]),
+            "video": bool(r and r["recording"]),
+        }
+        for event_id, r in results.items()
+    }}), 200
 
 
 # ── Transcript View ──────────────────────────────────────────
@@ -498,6 +567,8 @@ def transcript():
         })
 
     transcript_text = ""
+
+    transcript_lines = []
     error = None  # kept for template compatibility; transcript fetch warnings are not shown
     organizer_email = (
         meeting.get("organizer", {}).get("emailAddress", {}).get("address", "")
@@ -518,9 +589,54 @@ def transcript():
         len(meeting_join_url),
     )
 
+    # Step 0: the Teams list already resolved this meeting (owner + onlineMeeting ID) —
+    # fetch the transcript directly instead of repeating the lookups below.
+    cached_media = _MEDIA_CACHE.get(meeting["id"])
+    tried_app_lookup = False
+    if cached_media is None and effective_join_url:
+        # One shared lookup (owner, onlineMeeting, transcript, recording) for this page
+        app_token0 = get_app_token()
+        if app_token0:
+            try:
+                lookup_client = GraphClient(app_token0)
+                ids0 = _app_user_ids_for_transcript_lookup(
+                    lookup_client, meeting, signed_in_email=_current_user_email()
+                )
+                cached_media = _lookup_meeting_media(lookup_client, meeting, ids0)
+                tried_app_lookup = True
+                if cached_media.get("online_meeting_id"):
+                    _MEDIA_CACHE.set(meeting["id"], cached_media)
+            except Exception as e:
+                logger.warning("Step 0 lookup failed: %s", e)
+    skip_lookups = False
+    if cached_media and cached_media.get("online_meeting_id"):
+        skip_lookups = not cached_media["has_transcript"]
+        if cached_media["has_transcript"]:
+            try:
+                app_client0 = GraphClient(get_app_token())
+                uid0, mid0 = cached_media["user_id"], cached_media["online_meeting_id"]
+                transcripts = app_client0.list_transcripts(mid0, user_id=uid0)
+                if transcripts:
+                    vtt_content = app_client0.get_transcript_content(
+                        mid0, transcripts[0]["id"], user_id=uid0
+                    )
+                    if vtt_content:
+                        entries = parse_vtt_transcript(vtt_content)
+                        transcript_text = transcript_to_readable(entries)
+                        transcript_lines = transcript_view_lines(entries)
+                        logger.info("Step 0 SUCCESS (cached lookup): %d chars", len(transcript_text))
+            except Exception as e:
+                logger.warning("Step 0 FAILED: %s", e)
+    if skip_lookups:
+        logger.info("Step 0: cached lookup says no transcript; skipping Steps 1-3")
+        transcript_text = transcript_text or ""
+
     # Step 1: Try delegated token (works when user has OnlineMeetings.Read consent)
     try:
-        online_meeting = client.get_online_meeting_by_join_url(effective_join_url)
+        online_meeting = (
+            None if (transcript_text or skip_lookups)
+            else client.get_online_meeting_by_join_url(effective_join_url)
+        )
         if online_meeting:
             meeting_id = online_meeting["id"]
             logger.info("Step 1 OK: Found online meeting via delegated token")
@@ -532,14 +648,15 @@ def transcript():
                 if vtt_content:
                     entries = parse_vtt_transcript(vtt_content)
                     transcript_text = transcript_to_readable(entries)
+                    transcript_lines = transcript_view_lines(entries)
                     logger.info("Step 1 SUCCESS: loaded %d chars", len(transcript_text))
         else:
             logger.info("Step 1: No online meeting found via delegated token")
     except Exception as e:
         logger.warning("Step 1 FAILED: %s", e)
 
-    # Step 2: If delegated didn't work, try app token
-    if not transcript_text:
+    # Step 2: If delegated didn't work, try app token (Step 0 already tried the same users)
+    if not transcript_text and not skip_lookups and not tried_app_lookup:
         app_token = get_app_token()
         if app_token and effective_join_url:
             app_client = GraphClient(app_token)
@@ -590,6 +707,7 @@ def transcript():
                         if vtt_content:
                             entries = parse_vtt_transcript(vtt_content)
                             transcript_text = transcript_to_readable(entries)
+                            transcript_lines = transcript_view_lines(entries)
                             logger.info("Step 2 SUCCESS via %s: %d chars", label, len(transcript_text))
                 except Exception as e:
                     logger.warning("Step 2 FAILED via %s: %s", label, e)
@@ -597,7 +715,8 @@ def transcript():
     # Step 3: Search OneDrive directly for the Teams transcript VTT/DOCX file.
     # This fires when both API steps fail (common when app access policy isn't configured).
     # Teams saves transcript files alongside the recording in the organizer's OneDrive.
-    if not transcript_text:
+    step3_deadline = time.monotonic() + 10  # never wait out long Graph throttling here
+    if not transcript_text and not skip_lookups:
         step3_token = get_app_token()
         if step3_token:
             step3_client = GraphClient(step3_token)
@@ -630,7 +749,7 @@ def transcript():
                     logger.info("Step 3: Cannot resolve user %s", target_email)
                     continue
                 logger.info("Step 3: Searching OneDrive transcripts for %s", target_email)
-                found_files = step3_client._search_user_transcripts(uid)
+                found_files = step3_client._search_user_transcripts(uid, step3_deadline)
                 for tr in found_files:
                     if tr["date"] != meeting_date_8:
                         continue
@@ -647,6 +766,7 @@ def transcript():
                         content = _decode_bytes(raw)
                         entries = parse_vtt_transcript(content)
                         transcript_text = transcript_to_readable(entries)
+                        transcript_lines = transcript_view_lines(entries)
                     elif tr["ext"] == "docx":
                         try:
                             doc = Document(io.BytesIO(raw))
@@ -671,97 +791,73 @@ def transcript():
             meeting.get("start", {}).get("dateTime", "")[:10],
         )
 
+    recording = None
+    app_token_rec = get_app_token()
+    if app_token_rec:
+        recording = _recording_for_meeting(meeting, GraphClient(app_token_rec))
+
     return render_template(
         "transcript.html",
         meeting=meeting,
         transcript_text=transcript_text,
+        transcript_lines=transcript_lines,
+        recording=recording,
         attendees_json=json.dumps(attendees),
         error=error,
         back_url=back_url,
-        back_label="Customer Meetings",
+        back_label="Teams Meetings",
     )
 
 
-@main_bp.route("/meetings/teams/recording")
-@login_required
-def teams_recording():
-    """Play / download the Teams recording for a meeting on the signed-in user's calendar."""
-    event_id = request.args.get("event_id", "")
-    back_url = url_for("main.teams_meetings")
-
-    client = GraphClient(get_token())
-    try:
-        meeting = client.get_event(event_id) if event_id else None
-    except Exception:
-        logger.exception("teams_recording: event lookup failed")
-        meeting = None
-    if not meeting:
-        flash("Meeting not found on your calendar.", "warning")
-        return redirect(back_url)
-
-    app_token = get_app_token()
-    if not app_token:
-        flash("Recordings are unavailable: the app token could not be acquired.", "danger")
-        return redirect(back_url)
-    app_client = GraphClient(app_token)
-
-    # Only recordings matched to this calendar event are served (never a client-supplied ID)
+def _recording_for_meeting(meeting, app_client) -> dict | None:
+    """
+    Playable recording for a calendar event the signed-in user owns, or None.
+    Uses the entry cached by the meetings list, else the recordings API. Only
+    recordings matched to this event are ever served (never a client-supplied ID).
+    """
     recording_map = dict(session.get("recording_map", {}))
     entry = recording_map.get(meeting["id"])
-    if not entry:
+    cached = _MEDIA_CACHE.get(meeting["id"])
+    if not entry and cached is not None:
+        # Already looked up (from the Teams list) — reuse, including "no recording"
+        entry = cached["recording"]
+        if entry:
+            recording_map[meeting["id"]] = entry
+            session["recording_map"] = recording_map
+    elif not entry:
         try:
             ids = _app_user_ids_for_transcript_lookup(
                 app_client, meeting, signed_in_email=_current_user_email()
             )
             entry = _lookup_meeting_media(app_client, meeting, ids)["recording"]
-            if not entry:
-                me_id = client.get_user_profile().get("id", "")
-                rec = _find_recording(
-                    meeting,
-                    app_client.build_recording_lookup([meeting], me_id, Config.ORG_DOMAIN),
-                )
-                if rec and rec.get("item_id"):
-                    entry = {"kind": "onedrive", "user_id": rec["user_id"], "item_id": rec["item_id"]}
         except Exception:
-            logger.exception("teams_recording: recording lookup failed")
+            logger.exception("Recording lookup failed")
             entry = None
         if entry:
             recording_map[meeting["id"]] = entry
             session["recording_map"] = recording_map
 
-    recording = None
-    if entry and entry.get("kind") == "api":
+    if not entry:
+        return None
+    if entry.get("kind") == "api":
         stream_url = url_for("main.teams_recording_stream", event_id=meeting["id"])
-        recording = {
-            "name": f"{meeting.get('subject', 'Meeting')} - Recording.mp4",
-            "size": None,
-            "web_url": "",
-            "created": entry.get("created", ""),
-            "download_url": stream_url,
-            "file_download_url": f"{stream_url}&download=1",
-        }
-    elif entry:
-        recording = app_client.get_recording_file(entry["user_id"], entry["item_id"])
-        if recording:
-            recording["file_download_url"] = recording.get("download_url", "")
-    if not recording or not recording.get("download_url"):
-        flash(
-            "No recording was found for this meeting. It may not have been recorded, "
-            "or it was saved somewhere the app can't reach (e.g. a channel's SharePoint site).",
-            "warning",
-        )
-        return redirect(back_url)
+        return {"src": stream_url, "download_url": f"{stream_url}&download=1", "web_url": ""}
+    file_info = app_client.get_recording_file(entry["user_id"], entry["item_id"])
+    if not file_info or not file_info.get("download_url"):
+        return None
+    return {
+        "src": file_info["download_url"],
+        "download_url": file_info["download_url"],
+        "web_url": file_info.get("web_url", ""),
+    }
 
-    join_url = (meeting.get("onlineMeeting") or {}).get("joinUrl", "")
-    return render_template(
-        "recording.html",
-        meeting=meeting,
-        recording=recording,
-        transcript_url=url_for(
-            "main.transcript", event_id=meeting["id"], join_url=join_url, back=back_url
-        ),
-        back_url=back_url,
-    )
+
+@main_bp.route("/meetings/teams/recording")
+@login_required
+def teams_recording():
+    """Old video-only page: the meeting page now shows video and transcript together."""
+    event_id = request.args.get("event_id", "")
+    return redirect(url_for("main.transcript", event_id=event_id))
 
 
 @main_bp.route("/meetings/teams/recording/stream")
@@ -1302,12 +1398,15 @@ def zoom_transcript():
     meeting = ZoomClient.normalize_recording(recording)
 
     transcript_text = ""
+
+    transcript_lines = []
     if meeting.get("zoom_transcript_url"):
         try:
             vtt_content = zoom.get_transcript_content(meeting["zoom_transcript_url"])
             if vtt_content:
                 entries = parse_vtt_transcript(vtt_content)
                 transcript_text = transcript_to_readable(entries)
+                transcript_lines = transcript_view_lines(entries)
                 logger.info("Zoom transcript loaded: %d chars for meeting %s", len(transcript_text), meeting_id)
         except Exception as e:
             logger.warning("Zoom transcript fetch failed for %s: %s", meeting_id, e)
@@ -1343,6 +1442,7 @@ def zoom_transcript():
         "transcript.html",
         meeting=meeting,
         transcript_text=transcript_text,
+        transcript_lines=transcript_lines,
         attendees_json=json.dumps(attendees),
         error=None,
         back_url=url_for("main.zoom_dashboard"),

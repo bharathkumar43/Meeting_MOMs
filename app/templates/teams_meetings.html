@@ -2,6 +2,18 @@
 {% import "_macros.html" as ui with context %}
 {% block title %}Teams Meetings - MOM Generator{% endblock %}
 
+{% macro tx_pill(meeting) -%}
+{% if not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
+{% elif meeting.has_transcript %}<span class="status-pill status-ok">Available</span>
+{% else %}<span class="status-pill status-manual">Manual</span>{% endif %}
+{%- endmacro %}
+
+{% macro video_pill(meeting) -%}
+{% if not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
+{% elif meeting.has_recording %}<span class="status-pill status-sent">Available</span>
+{% else %}<span class="text-muted small">&mdash;</span>{% endif %}
+{%- endmacro %}
+
 {% block content %}
 {% set total_count = meetings | length %}
 {% set with_tx = meetings | selectattr('has_transcript', 'equalto', true) | list | length %}
@@ -16,9 +28,8 @@
         <p class="page-subtitle">Customer meetings from your Outlook calendar that include external attendees.</p>
     </div>
     <div class="page-actions">
-        <span class="status-pill status-ok">{{ with_tx }} with transcript</span>
-        <span class="status-pill status-sent">{{ with_video }} with video</span>
-        <span class="status-pill status-manual">{{ total_count - with_tx }} manual</span>
+        <span class="status-pill status-ok"><span data-count="transcript">{{ with_tx }}</span> with transcript</span>
+        <span class="status-pill status-sent"><span data-count="video">{{ with_video }}</span> with video</span>
     </div>
 </div>
 
@@ -29,7 +40,8 @@
 <div class="card">
     {% if meetings %}
     <div class="table-responsive">
-        <table class="table table-hover align-middle" id="meetingsTable">
+        <table class="table table-hover align-middle" id="meetingsTable"
+               data-status-url="{{ url_for('main.teams_meetings_status') }}">
             <thead>
                 <tr>
                     <th>Meeting</th>
@@ -45,6 +57,8 @@
                 {% set join_url = meeting.get('onlineMeeting', {}).get('joinUrl', '') %}
                 {% set open_url = url_for('main.transcript', event_id=meeting.id, join_url=join_url, back=request.url) %}
                 <tr data-search="{{ ui.search_text(meeting) }}"
+                    data-event-id="{{ meeting.id }}"
+                    {% if not meeting.status_known %}data-pending{% endif %}
                     data-status="{{ 'transcript' if meeting.has_transcript else 'manual' }}"
                     data-video="{{ 'yes' if meeting.has_recording else 'no' }}">
                     <td>
@@ -61,33 +75,13 @@
                         <div class="date-sub">{{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC</div>
                     </td>
                     <td>{{ ui.attendee_chips(meeting.external_attendees) }}</td>
-                    <td>
-                        {% if meeting.has_transcript %}
-                        <span class="status-pill status-ok">Available</span>
-                        {% else %}
-                        <span class="status-pill status-manual">Manual</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if meeting.has_recording %}
-                        <a href="{{ url_for('main.teams_recording', event_id=meeting.id) }}"
-                           class="btn btn-sm btn-light-outline">
-                            <i class="bi bi-play-circle"></i> Watch
-                        </a>
-                        {% else %}
-                        <span class="text-muted small">&mdash;</span>
-                        {% endif %}
-                    </td>
+                    <td data-cell="transcript">{{ tx_pill(meeting) }}</td>
+                    <td data-cell="video">{{ video_pill(meeting) }}</td>
                     <td class="text-end">
-                        {% if meeting.has_transcript %}
-                        <a href="{{ open_url }}" class="btn btn-sm btn-primary">
-                            <i class="bi bi-file-text"></i> View transcript
+                        <a href="{{ open_url }}" data-open
+                           class="btn btn-sm {{ 'btn-primary' if meeting.has_transcript or meeting.has_recording else 'btn-outline-primary' }}">
+                            Open <i class="bi bi-arrow-right"></i>
                         </a>
-                        {% else %}
-                        <a href="{{ open_url }}" class="btn btn-sm btn-outline-primary">
-                            <i class="bi bi-pencil-square"></i> Create MOM
-                        </a>
-                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}
@@ -111,4 +105,5 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/filters.js') }}"></script>
+<script src="{{ url_for('static', filename='js/teams_status.js') }}"></script>
 {% endblock %}

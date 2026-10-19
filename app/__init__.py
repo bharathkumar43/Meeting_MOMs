@@ -6,7 +6,12 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from config import Config
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(
+    level=logging.DEBUG if os.getenv("FLASK_DEBUG", "false").lower() == "true" else logging.INFO
+)
+# These libraries log full HTTP/token-request payloads at DEBUG — slow and noisy
+for _noisy in ("msal", "urllib3"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 db = SQLAlchemy()
 migrate = Migrate()
@@ -30,6 +35,19 @@ def create_app():
     Session(app)
     db.init_app(app)
     migrate.init_app(app, db)
+
+    # Browsers cache static files for a year; the ?v=<mtime> added below changes
+    # whenever a file changes, so edits still show up immediately.
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 31536000
+
+    @app.url_defaults
+    def _static_cache_bust(endpoint, values):
+        if endpoint == "static" and "filename" in values and "v" not in values:
+            path = os.path.join(app.static_folder, values["filename"])
+            try:
+                values["v"] = int(os.stat(path).st_mtime)
+            except OSError:
+                pass
 
     from app.routes import main_bp
     app.register_blueprint(main_bp)

@@ -572,6 +572,10 @@ body {
 .status-manual  { background: #f1f5f9; color: var(--cf-muted); }
 .status-pending { background: #fdf3e2; color: var(--cf-warning); }
 .status-sent    { background: var(--cf-primary-soft); color: var(--cf-primary); }
+.status-loading { background: #f1f5f9; color: var(--cf-muted); }
+.status-loading::before { animation: pulse-dot 1s ease-in-out infinite; }
+
+@keyframes pulse-dot { 50% { opacity: .25; } }
 
 /* ── Empty states ──────────────────────────────────────────── */
 
@@ -674,9 +678,47 @@ textarea.form-control { resize: vertical; }
 .recording-player {
     display: block;
     width: 100%;
-    max-height: 75vh;
+    aspect-ratio: 16 / 9;
+    max-height: 72vh;
     background: #000;
 }
+
+/* Timestamped transcript viewer */
+.tx-list {
+    max-height: 70vh;
+    overflow-y: auto;
+    padding: .5rem;
+}
+
+.tx-list-media { max-height: calc(100vh - 260px); min-height: 360px; }
+
+.tx-line {
+    display: grid;
+    grid-template-columns: 3.75rem 1fr;
+    gap: .5rem;
+    padding: .4rem .5rem;
+    border-radius: var(--cf-radius-sm);
+    border-left: 3px solid transparent;
+}
+
+.tx-seek { cursor: pointer; }
+.tx-seek:hover, .tx-seek:focus-visible { background: var(--cf-bg); outline: none; }
+
+.tx-line.active {
+    background: var(--cf-primary-soft);
+    border-left-color: var(--cf-primary);
+}
+
+.tx-time {
+    color: var(--cf-muted);
+    font-family: var(--bs-font-monospace);
+    font-size: .78rem;
+    padding-top: .15rem;
+}
+
+.tx-seek .tx-time { color: var(--cf-primary); }
+.tx-speaker { font-weight: 600; font-size: .8125rem; color: var(--cf-ink); }
+.tx-text { font-size: .9rem; line-height: 1.5; color: var(--cf-ink-2); }
 
 .email-preview {
     font-family: Calibri, 'Segoe UI', sans-serif;
