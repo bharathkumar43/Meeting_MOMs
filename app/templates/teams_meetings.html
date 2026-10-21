@@ -4,8 +4,6 @@
 
 {% block content %}
 {% set total_count = meetings | length %}
-{% set with_tx = meetings | selectattr('has_transcript', 'equalto', true) | list | length %}
-{% set with_video = meetings | selectattr('has_recording', 'equalto', true) | list | length %}
 
 <div class="page-header">
     <div>
@@ -15,8 +13,6 @@
         </h1>
     </div>
     <div class="page-actions align-items-center">
-        <span class="status-pill status-ok"><span data-count="transcript">{{ with_tx }}</span> with transcript</span>
-        <span class="status-pill status-sent"><span data-count="video">{{ with_video }}</span> with video</span>
         <span class="sync-meta text-muted small" title="Meetings refresh automatically every 15 minutes">
             Synced {{ last_synced_at | time_ago }}
         </span>
@@ -29,7 +25,7 @@
 
 {{ ui.filter_bar('main.teams_meetings', start_date, end_date, keyword, include_all=True, default_preset='All') }}
 
-{{ ui.results_meta(total_count) }}
+{{ ui.results_meta(total_count, grand_total=list_total) }}
 
 <div class="card">
     {% if meetings or next_offset is not none %}

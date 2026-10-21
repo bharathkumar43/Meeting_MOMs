@@ -54,6 +54,12 @@
                         <i class="bi bi-shield-lock"></i> Admin
                     </a>
                 </li>
+                {% elif nav_user.is_manager %}
+                <li class="nav-item">
+                    <a class="nav-link {{ 'active' if ep == 'main.team' or ep.startswith('main.admin_user') }}" href="{{ url_for('main.team') }}">
+                        <i class="bi bi-people"></i> My team
+                    </a>
+                </li>
                 {% endif %}
             </ul>
 
@@ -71,6 +77,8 @@
                             <div class="email">{{ nav_user.email }}</div>
                             {% if nav_user.is_admin %}
                             <span class="badge bg-primary-subtle text-primary mt-1">Admin</span>
+                            {% elif nav_user.is_manager %}
+                            <span class="badge bg-primary-subtle text-primary mt-1">Manager</span>
                             {% endif %}
                         </div>
                     </div>
@@ -78,6 +86,11 @@
                     <div class="dropdown-divider"></div>
                     <a class="dropdown-item" href="{{ url_for('main.admin_dashboard') }}">
                         <i class="bi bi-shield-lock"></i> Admin dashboard
+                    </a>
+                    {% elif nav_user.is_manager %}
+                    <div class="dropdown-divider"></div>
+                    <a class="dropdown-item" href="{{ url_for('main.team') }}">
+                        <i class="bi bi-people"></i> My team
                     </a>
                     {% endif %}
                     <div class="dropdown-divider"></div>
@@ -109,7 +122,7 @@
 
     <footer class="app-footer d-flex justify-content-between flex-wrap gap-2">
         <span>&copy; CloudFuze, Inc. &mdash; Meeting MOM Generator</span>
-        <span>Times shown in UTC</span>
+        <span>Times shown in {{ tz_name }}</span>
     </footer>
 {% endblock %}
 

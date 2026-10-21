@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 from flask import (
     Blueprint, render_template, redirect, url_for,
-    request, session, flash, send_file, jsonify, Response, stream_with_context,
+    request, session, flash, send_file, jsonify, Response, stream_with_context, current_app,
 )
 import io
 from docx import Document
@@ -18,18 +18,17 @@ from werkzeug.utils import secure_filename
 
 from app.auth import get_auth_url, process_auth_callback, get_token, get_app_token, logout as auth_logout
 from app.graph_client import GraphClient
-from app import db, meeting_sync
+from app import db, meeting_sync, meeting_uploads, roles, timefmt
 from app.meeting_sync import (
     candidate_user_ids as _app_user_ids_for_transcript_lookup,
-    find_recording as _find_recording,
     lookup_meeting_media as _lookup_meeting_media,
     record_media, record_to_meeting,
 )
-from app.models import MeetingRecord
+from app.models import CalendarSync, MeetingRecord, MeetingUpload
 from app.zoom_auth import get_zoom_access_token
 from app.zoom_client import ZoomClient
 from app.meeting_filter import (
-    filter_customer_meetings, filter_by_subject,
+    filter_by_subject,
     parse_vtt_transcript, transcript_to_readable, transcript_view_lines,
 )
 from app.doc_generator import generate_mom_document, convert_docx_to_pdf
@@ -60,13 +59,15 @@ def inject_layout_context() -> dict:
     name = user.get("name", "") or ""
     email = _current_user_email()
     initials = "".join(part[0] for part in name.split()[:2]).upper() or (email[:1].upper() or "U")
-    today = datetime.now()
+    today = timefmt.local_today()
     return {
+        "tz_name": timefmt.TZ_NAME,
         "nav_user": {
             "name": name or email,
             "email": email,
             "initials": initials,
-            "is_admin": bool(email) and email in Config.ADMIN_EMAILS,
+            "is_admin": bool(email) and roles.is_admin(email),
+            "is_manager": bool(email) and roles.is_manager(email),
         },
         "date_presets": {
             "today": today.strftime("%Y-%m-%d"),
@@ -74,19 +75,38 @@ def inject_layout_context() -> dict:
                 ("Today", today.strftime("%Y-%m-%d")),
                 ("7 days", (today - timedelta(days=7)).strftime("%Y-%m-%d")),
                 ("30 days", (today - timedelta(days=30)).strftime("%Y-%m-%d")),
-                ("90 days", (today - timedelta(days=90)).strftime("%Y-%m-%d")),
             ],
         },
     }
 
 
 @main_bp.app_template_filter("nice_date")
-def nice_date(value: str) -> str:
-    """'2026-10-19T14:00:00' or '2026-10-19' -> 'Mon, 19 Oct 2026'."""
+def nice_date(value) -> str:
+    """UTC timestamp -> local 'Mon, 19 Oct 2026'; a date-only 'YYYY-MM-DD' is shown as is."""
+    day = timefmt.local_date(value)
     try:
-        return datetime.strptime((value or "")[:10], "%Y-%m-%d").strftime("%a, %d %b %Y")
+        return datetime.strptime(day, "%Y-%m-%d").strftime("%a, %d %b %Y")
     except ValueError:
         return value or ""
+
+
+@main_bp.app_template_filter("hm")
+def hm(value) -> str:
+    """UTC timestamp -> local 'HH:MM'."""
+    return timefmt.local_hm(value)
+
+
+@main_bp.app_template_filter("local_date")
+def local_date(value) -> str:
+    """UTC timestamp -> local 'YYYY-MM-DD' (used for meeting dates/keys)."""
+    return timefmt.local_date(value)
+
+
+@main_bp.app_template_filter("local_dt")
+def local_dt(value, fmt: str = "%d %b %Y, %H:%M") -> str:
+    """Naive-UTC datetime -> local formatted string."""
+    local = timefmt.to_local(value)
+    return local.strftime(fmt) if local else ""
 
 
 @main_bp.route("/favicon.ico")
@@ -131,68 +151,6 @@ def _text_from_uploaded_docx(raw: bytes) -> str:
     return "\n".join(parts).strip()
 
 
-def _match_recording(meeting, all_recordings):
-    """Check if a calendar event has a matching recording file in OneDrive."""
-    return _find_recording(meeting, all_recordings) is not None
-
-
-def _graph_transcript_exists_app(app_client, join_url, user_ids):
-    """True if any listed user can resolve join_url to an online meeting with transcripts."""
-    if not join_url or not app_client or not user_ids:
-        return False
-    for uid in user_ids:
-        if not uid:
-            continue
-        try:
-            online_meeting = app_client.get_online_meeting_for_user(uid, join_url)
-            if not online_meeting:
-                continue
-            meeting_id = online_meeting["id"]
-            transcripts = app_client.list_transcripts(meeting_id, user_id=uid)
-            if transcripts:
-                return True
-        except Exception as e:
-            logger.debug("App transcript lookup failed for uid=%s: %s", uid, e)
-            continue
-    return False
-
-
-def meeting_has_transcript_signal(
-    meeting,
-    all_recordings,
-    delegated_client,
-    app_client,
-    signed_in_email="",
-    viewed_user_id=None,
-):
-    """
-    True if we expect transcript content to be available: OneDrive recording match
-    OR Graph lists at least one transcript (delegated /me path, then app fallback).
-    """
-    if _match_recording(meeting, all_recordings):
-        return True
-
-    join_url = (meeting.get("onlineMeeting") or {}).get("joinUrl", "") or ""
-    if not join_url:
-        return False
-
-    if delegated_client:
-        try:
-            if delegated_client.check_transcript_exists(join_url):
-                return True
-        except Exception as e:
-            logger.debug("Delegated transcript check failed: %s", e)
-
-    if app_client:
-        ids = _app_user_ids_for_transcript_lookup(
-            app_client, meeting, signed_in_email=signed_in_email, viewed_user_id=viewed_user_id
-        )
-        if _graph_transcript_exists_app(app_client, join_url, ids):
-            return True
-
-    return False
-
-
 _RECORDING_MAP_LIMIT = 300
 
 
@@ -212,10 +170,23 @@ def admin_required(f):
         token = get_token()
         if not token:
             return redirect(url_for("main.login_page"))
-        user = session.get("user", {})
-        email = (user.get("preferred_username") or user.get("upn") or "").lower()
-        if email not in Config.ADMIN_EMAILS:
+        if not roles.is_admin(_current_user_email()):
             flash("Access denied. Admin privileges required.", "danger")
+            return redirect(url_for("main.dashboard"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def staff_required(f):
+    """Admins and managers (per-user access is then checked with roles.can_view)."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = get_token()
+        if not token:
+            return redirect(url_for("main.login_page"))
+        email = _current_user_email()
+        if not (roles.is_admin(email) or roles.is_manager(email)):
+            flash("Access denied.", "danger")
             return redirect(url_for("main.dashboard"))
         return f(*args, **kwargs)
     return decorated
@@ -250,6 +221,8 @@ def auth_callback():
         name = user.get("name", "")
         if email:
             record_login(email, name)
+            # Signing in enrols the user in meeting sync (latest window fetched in background)
+            meeting_sync.start_initial_sync(current_app._get_current_object(), email)
         flash("Signed in successfully.", "success")
         return redirect(url_for("main.dashboard"))
     flash("Authentication failed. Please try again.", "danger")
@@ -290,17 +263,28 @@ def dashboard():
 _TEAMS_PAGE_SIZE = 50
 
 
-def _end_of_today_utc() -> datetime:
-    now = datetime.utcnow()
-    return datetime(now.year, now.month, now.day, 23, 59, 59)
+def _local_range_utc(start_date: str, end_date: str) -> tuple[str, str, datetime, datetime]:
+    """
+    Filter dates are local (IST) calendar days. Returns the normalized 'YYYY-MM-DD' strings
+    and the naive-UTC [start, end] bounds covering those whole local days.
+    Raises ValueError on a malformed date.
+    """
+    today = timefmt.local_today()
+    start = datetime.strptime(start_date or (today - timedelta(days=7)).strftime("%Y-%m-%d"), "%Y-%m-%d")
+    end = datetime.strptime(end_date or today.strftime("%Y-%m-%d"), "%Y-%m-%d")
+    return (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"),
+            timefmt.local_day_bounds_utc(start)[0], timefmt.local_day_bounds_utc(end)[1])
 
 
 def _teams_query(owner_email: str, keyword: str, start: datetime | None = None,
-                 end: datetime | None = None):
-    """Stored customer meetings for one user, newest first, optional range + subject terms."""
-    q = MeetingRecord.query.filter(
+                 end: datetime | None = None, source: str | None = "teams"):
+    """Stored customer meetings for one user, newest first, optional range + subject terms.
+    source: 'teams' (default) / 'google' / 'zoom', or None for every source.
+    Only meetings that have already started are listed (no transcript/MOM exists before)."""
+    now = datetime.utcnow()
+    q = meeting_sync.source_filter(MeetingRecord.query, source).filter(
         MeetingRecord.owner_email == owner_email,
-        MeetingRecord.start_utc <= (end or _end_of_today_utc()),
+        MeetingRecord.start_utc <= min(end or now, now),
     )
     if start:
         q = q.filter(MeetingRecord.start_utc >= start)
@@ -314,6 +298,9 @@ def _teams_query(owner_email: str, keyword: str, start: datetime | None = None,
 
 
 def _history_complete(state) -> bool:
+    """True when no older history will be fetched (always, when backfill is disabled)."""
+    if not meeting_sync.BACKFILL_ENABLED:
+        return True
     oldest = datetime.utcnow() - timedelta(days=meeting_sync.BACKFILL_DAYS)
     return bool(state and state.synced_from and state.synced_from <= oldest + timedelta(days=1))
 
@@ -329,7 +316,7 @@ def time_ago(value: datetime | None) -> str:
         return f"{secs // 60} min ago"
     if secs < 86400:
         return f"{secs // 3600} h ago"
-    return value.strftime("%d %b %H:%M UTC")
+    return f"{local_dt(value, '%d %b %H:%M')} {timefmt.TZ_NAME}"
 
 
 @main_bp.route("/meetings/teams")
@@ -358,22 +345,18 @@ def teams_meetings():
     next_offset = None
     try:
         if all_mode:
-            rows = _teams_query(email, keyword).limit(_TEAMS_PAGE_SIZE + 1).all()
+            list_query = _teams_query(email, keyword)
+            rows = list_query.limit(_TEAMS_PAGE_SIZE + 1).all()
             if len(rows) > _TEAMS_PAGE_SIZE or not _history_complete(state):
                 next_offset = min(len(rows), _TEAMS_PAGE_SIZE)
             rows = rows[:_TEAMS_PAGE_SIZE]
+            list_total = list_query.count()  # stored so far (older history may still load)
         else:
-            today = datetime.utcnow()
-            start = datetime.strptime(
-                start_date or (today - timedelta(days=7)).strftime("%Y-%m-%d"), "%Y-%m-%d"
-            )
-            end = datetime.strptime(end_date or today.strftime("%Y-%m-%d"), "%Y-%m-%d")
-            start_date, end_date = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+            start_date, end_date, start, end = _local_range_utc(start_date, end_date)
             if state and state.synced_from and start < state.synced_from:
                 meeting_sync.ensure_backfill(email, start)  # range older than stored history
-            rows = _teams_query(
-                email, keyword, start, end.replace(hour=23, minute=59, second=59)
-            ).all()
+            rows = _teams_query(email, keyword, start, end).all()
+            list_total = len(rows)
     except ValueError:
         flash("Invalid date range.", "warning")
         return redirect(url_for("main.teams_meetings"))
@@ -386,6 +369,7 @@ def teams_meetings():
         keyword=keyword,
         all_mode=all_mode,
         next_offset=next_offset,
+        list_total=list_total,
         last_synced_at=state.last_synced_at if state else None,
     )
 
@@ -568,7 +552,9 @@ def transcript():
             try:
                 app_client0 = GraphClient(get_app_token())
                 uid0, mid0 = cached_media["user_id"], cached_media["online_meeting_id"]
-                transcripts = app_client0.list_transcripts(mid0, user_id=uid0)
+                transcripts = meeting_sync.for_occurrence(
+                    app_client0.list_transcripts(mid0, user_id=uid0), meeting
+                )
                 if transcripts:
                     vtt_content = app_client0.get_transcript_content(
                         mid0, transcripts[0]["id"], user_id=uid0
@@ -593,7 +579,7 @@ def transcript():
         if online_meeting:
             meeting_id = online_meeting["id"]
             logger.info("Step 1 OK: Found online meeting via delegated token")
-            transcripts = client.list_transcripts(meeting_id)
+            transcripts = meeting_sync.for_occurrence(client.list_transcripts(meeting_id), meeting)
             logger.info("Step 1: %d transcript(s) found", len(transcripts))
             if transcripts:
                 transcript_id = transcripts[0]["id"]
@@ -650,7 +636,9 @@ def transcript():
                         continue
                     meeting_id = online_meeting["id"]
                     logger.info("Step 2: Found meeting via %s", label)
-                    transcripts = app_client.list_transcripts(meeting_id, user_id=uid)
+                    transcripts = meeting_sync.for_occurrence(
+                        app_client.list_transcripts(meeting_id, user_id=uid), meeting
+                    )
                     logger.info("Step 2: %d transcript(s) via %s", len(transcripts), label)
                     if transcripts:
                         transcript_id = transcripts[0]["id"]
@@ -741,13 +729,18 @@ def transcript():
         record_meeting_access(
             email,
             meeting.get("subject", ""),
-            meeting.get("start", {}).get("dateTime", "")[:10],
+            timefmt.local_date(meeting.get("start", {}).get("dateTime", "")),
         )
 
     recording = None
     app_token_rec = get_app_token()
     if app_token_rec:
         recording = _recording_for_meeting(meeting, GraphClient(app_token_rec))
+
+    record = meeting_sync.get_record(_current_user_email(), meeting["id"])
+    transcript_text, transcript_lines, recording, uploads = _with_uploads(
+        record, transcript_text, transcript_lines, recording
+    )
 
     return render_template(
         "transcript.html",
@@ -759,6 +752,9 @@ def transcript():
         error=error,
         back_url=back_url,
         back_label="Teams Meetings",
+        can_upload=record is not None,
+        upload_owner=_current_user_email(),
+        uploads=uploads,
     )
 
 
@@ -793,10 +789,21 @@ def _recording_for_meeting(meeting, app_client) -> dict | None:
             recording_map[meeting["id"]] = entry
             session["recording_map"] = recording_map
 
+    return _playable_recording(entry, meeting["id"], app_client)
+
+
+def _playable_recording(entry: dict | None, event_id: str, app_client) -> dict | None:
+    """
+    Turn a stored recording entry into player URLs. Recordings-API entries stream through
+    teams_recording_stream, which only serves entries placed in this session's map.
+    """
     if not entry:
         return None
     if entry.get("kind") == "api":
-        stream_url = url_for("main.teams_recording_stream", event_id=meeting["id"])
+        recording_map = dict(session.get("recording_map", {}))
+        recording_map[event_id] = entry
+        session["recording_map"] = dict(list(recording_map.items())[-_RECORDING_MAP_LIMIT:])
+        stream_url = url_for("main.teams_recording_stream", event_id=event_id)
         return {"src": stream_url, "download_url": f"{stream_url}&download=1", "web_url": ""}
     file_info = app_client.get_recording_file(entry["user_id"], entry["item_id"])
     if not file_info or not file_info.get("download_url"):
@@ -858,6 +865,130 @@ def teams_recording_stream():
             upstream.close()
 
     return Response(stream_with_context(generate()), status=upstream.status_code, headers=headers)
+
+
+# ── Manual uploads (video / transcript) ──────────────────────
+
+def _upload_record_for_request():
+    """
+    (MeetingRecord, error_response) for an upload request. The record must belong to the
+    signed-in user, or — for admins only — to the org user named in the 'owner' field.
+    """
+    owner = (request.form.get("owner") or "").strip().lower()
+    event_id = request.form.get("event_id", "")
+    me = _current_user_email()
+    if owner and owner != me:
+        if not _admin_target_email(owner):
+            return None, (jsonify({"status": "error", "message": "Not allowed."}), 403)
+    else:
+        owner = me
+    record = meeting_sync.get_record(owner, event_id) if event_id else None
+    if record is None:
+        return None, (jsonify({"status": "error", "message": "Meeting not found."}), 404)
+    return record, None
+
+
+@main_bp.route("/meetings/upload/video", methods=["POST"])
+@login_required
+def upload_meeting_video():
+    """Drag-and-drop / browse upload of a meeting video (owner or admin)."""
+    if request.method != "POST":
+        return jsonify({"status": "error", "message": "POST required."}), 405
+    record, error = _upload_record_for_request()
+    if error:
+        return error
+    file = request.files.get("video")
+    if not file or not file.filename:
+        return jsonify({"status": "error", "message": "Choose a video file."}), 400
+    try:
+        meeting_uploads.save_video(record, file, _current_user_email())
+    except meeting_uploads.UploadError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except Exception:
+        db.session.rollback()
+        logger.exception("Video upload failed for record %s", record.id)
+        return jsonify({"status": "error", "message": "Upload failed. Please try again."}), 500
+    return jsonify({"status": "ok", "data": {"saved": True}}), 200
+
+
+@main_bp.route("/meetings/upload/transcript", methods=["POST"])
+@login_required
+def upload_meeting_transcript():
+    """Upload and keep a transcript (.vtt keeps timestamps; .txt / .docx as text)."""
+    if request.method != "POST":
+        return jsonify({"status": "error", "message": "POST required."}), 405
+    record, error = _upload_record_for_request()
+    if error:
+        return error
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"status": "error", "message": "Choose a transcript file."}), 400
+    ext = os.path.splitext(secure_filename(file.filename).lower())[1]
+    fmt = meeting_uploads.TRANSCRIPT_FORMATS.get(ext)
+    if not fmt:
+        return jsonify({"status": "error", "message": "Please upload a .vtt, .txt or .docx file."}), 400
+    raw = file.read(TRANSCRIPT_UPLOAD_MAX_BYTES + 1)
+    if len(raw) > TRANSCRIPT_UPLOAD_MAX_BYTES:
+        return jsonify({"status": "error", "message": "File is too large (maximum 10 MB)."}), 413
+    try:
+        text = _text_from_uploaded_docx(raw) if fmt == "docx" else _decode_text_file(raw)
+        meeting_uploads.save_transcript(record, file.filename, fmt, text, _current_user_email())
+    except meeting_uploads.UploadError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except Exception:
+        db.session.rollback()
+        logger.exception("Transcript upload failed for record %s", record.id)
+        return jsonify({"status": "error", "message": "Could not read this file."}), 400
+    return jsonify({"status": "ok", "data": {"saved": True}}), 200
+
+
+@main_bp.route("/meetings/upload/<int:upload_id>/video")
+@login_required
+def uploaded_video(upload_id):
+    """Serve an uploaded video (supports seeking) to its meeting's owner or an admin."""
+    upload = db.session.get(MeetingUpload, upload_id)
+    record = db.session.get(MeetingRecord, upload.meeting_record_id) if upload else None
+    me = _current_user_email()
+    if (upload is None or upload.kind != "video" or record is None
+            or not roles.can_view(me, record.owner_email)):
+        return Response("Not found.", status=404)
+    path = meeting_uploads.video_path(upload)
+    if not os.path.exists(path):
+        return Response("Not found.", status=404)
+    response = send_file(
+        path, mimetype=upload.content_type, conditional=True,
+        as_attachment=request.args.get("download") == "1",
+        download_name=upload.original_name or f"meeting-{record.id}.mp4",
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+def _with_uploads(record, transcript_text: str, transcript_lines: list, recording):
+    """
+    Fall back to uploaded files when Teams has nothing: returns
+    (transcript_text, transcript_lines, recording, uploads_info) for the meeting page.
+    """
+    info = {"video": None, "transcript": None}
+    if record is None:
+        return transcript_text, transcript_lines, recording, info
+    if not recording:
+        video = meeting_uploads.latest(record, "video")
+        if video and os.path.exists(meeting_uploads.video_path(video)):
+            src = url_for("main.uploaded_video", upload_id=video.id)
+            recording = {"src": src, "download_url": f"{src}?download=1", "web_url": ""}
+            info["video"] = video
+    if not transcript_text:
+        tx = meeting_uploads.latest(record, "transcript")
+        if tx and tx.transcript_text:
+            info["transcript"] = tx
+            if tx.transcript_format == "vtt":
+                entries = parse_vtt_transcript(tx.transcript_text)
+                transcript_text = transcript_to_readable(entries) or tx.transcript_text
+                transcript_lines = transcript_view_lines(entries)
+            else:
+                transcript_text = tx.transcript_text
+    return transcript_text, transcript_lines, recording, info
 
 
 @main_bp.route("/transcript/parse-file", methods=["POST"])
@@ -1200,6 +1331,68 @@ def admin_dashboard():
         audit_sender_display=audit_sender_display,
         audit_recipients_display=audit_recipients_display,
         user_dashboard_stats=user_dashboard_stats,
+        # Meeting-sync enrolment per user: {email: CalendarSync} (missing = not synced yet)
+        sync_states={row.owner_email: row for row in CalendarSync.query.all()},
+        **_role_context(user_dashboard_stats),
+    )
+
+
+def _role_context(user_rows) -> dict:
+    """Role, manager and dropdown data for the admin users table."""
+    emails = [u["email"].lower() for u in user_rows]
+    names = {u["email"].lower(): (u["name"] or u["email"]) for u in user_rows}
+    user_roles = {e: roles.role_of(e) for e in emails}
+    return {
+        "user_roles": user_roles,
+        "user_managers": {e: roles.manager_of(e) for e in emails},
+        "locked_admins": {e for e in emails if roles.is_env_admin(e)},
+        "manager_choices": sorted(
+            [(e, names[e]) for e in emails if user_roles[e] == "manager"], key=lambda m: m[1].lower()
+        ),
+        "role_labels": roles.ROLE_LABELS,
+        "org_suffix": f"@{Config.ORG_DOMAIN}".lower(),
+    }
+
+
+@main_bp.route("/admin/users/<path:user_email>/role", methods=["POST"])
+@admin_required
+def admin_set_role(user_email):
+    """Admin only: set a user's role and/or manager (JSON {role?, manager?})."""
+    if request.method != "POST" or not request.is_json:
+        return jsonify({"status": "error", "message": "Expected JSON."}), 400
+    payload = request.get_json(silent=True) or {}
+    role = payload.get("role") if "role" in payload else None
+    manager = payload.get("manager") if "manager" in payload else None
+    if role is not None and not isinstance(role, str) or manager is not None and not isinstance(manager, str):
+        return jsonify({"status": "error", "message": "Invalid value."}), 400
+    try:
+        row = roles.assign(user_email, role, manager, by=_current_user_email())
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except Exception:
+        db.session.rollback()
+        logger.exception("admin_set_role failed for %s", user_email)
+        return jsonify({"status": "error", "message": "Could not save. Please try again."}), 500
+    return jsonify({"status": "ok", "data": {
+        "role": roles.role_of(row.email), "manager": row.manager_email,
+    }}), 200
+
+
+@main_bp.route("/team")
+@staff_required
+def team():
+    """Manager's page: their assigned employees (admins see the full admin panel instead)."""
+    me = _current_user_email()
+    if roles.is_admin(me) and not roles.is_manager(me):
+        return redirect(url_for("main.admin_dashboard"))
+    team_emails = set(roles.team_of(me))
+    rows = [u for u in get_all_user_dashboard_stats() if u["email"].lower() in team_emails]
+    return render_template(
+        "team.html",
+        team_rows=rows,
+        sync_states={r.owner_email: r for r in CalendarSync.query.filter(
+            CalendarSync.owner_email.in_(team_emails)).all()} if team_emails else {},
+        user_roles={u["email"].lower(): roles.role_of(u["email"]) for u in rows},
     )
 
 
@@ -1217,72 +1410,298 @@ def admin_send_audit_report():
 
 # ── Admin: Per-User Meetings View ────────────────────────────
 
-@main_bp.route("/admin/user-meetings/<path:user_email>")
-@admin_required
-def admin_user_meetings(user_email):
-    today = datetime.now().strftime("%Y-%m-%d")
-    default_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    start_date = request.args.get("start_date") or default_start
-    end_date = request.args.get("end_date") or today
+_ADMIN_PAGE_SIZE = 50
 
-    meetings = []
-    user_display_name = user_email
+
+def _admin_target_email(user_email: str) -> str | None:
+    """
+    Normalized org email the signed-in admin/manager may open, or None.
+    Admins: any account in our tenant. Managers: only employees assigned to them.
+    """
+    email = (user_email or "").strip().lower()
+    if not email.endswith(f"@{Config.ORG_DOMAIN}".lower()) or "/" in email:
+        return None
+    if not roles.can_view(_current_user_email(), email):
+        return None
+    return email
+
+
+def _people_home() -> str:
+    """Where admins/managers go back to: the admin panel or the manager's team page."""
+    if roles.is_admin(_current_user_email()):
+        return url_for("main.admin_dashboard")
+    return url_for("main.team")
+
+
+@main_bp.route("/admin/user-meetings/<path:user_email>")
+@staff_required
+def admin_user_meetings(user_email):
+    """An employee's Teams customer meetings (from the database), with transcript/video."""
+    email = _admin_target_email(user_email)
+    if not email:
+        flash("You don't have access to this user's meetings.", "warning")
+        return redirect(_people_home())
+
+    start_date = request.args.get("start_date", "")
+    end_date = request.args.get("end_date", "")
+    keyword = request.args.get("keyword", "")
+    source = request.args.get("source", "")
+    if source not in meeting_sync.SOURCES:
+        source = ""
     error = None
 
-    try:
-        app_token = get_app_token()
-        if not app_token:
-            error = (
-                "Application token not available. "
-                "Ensure Application permissions (Calendars.Read, OnlineMeetingTranscript.Read.All) "
-                "are configured in Azure AD with admin consent."
-            )
-        else:
-            client = GraphClient(app_token)
-
-            user_info = client.get_user_id(user_email)
-            user_id = user_info["id"]
-            user_display_name = user_info.get("displayName", user_email)
-
-            events = client.list_user_calendar_events(user_id, start_date, end_date)
-            meetings = filter_customer_meetings(events, Config.ORG_DOMAIN)
-
-            all_recordings = client.build_recording_lookup(
-                meetings, user_id, Config.ORG_DOMAIN
-            )
-
-            for meeting in meetings:
-                meeting["has_transcript"] = _match_recording(meeting, all_recordings)
-
-    except Exception:
-        logger.exception("admin_user_meetings fetch failed for %s", user_email)
+    # Only users who signed in since sync was enabled are synced automatically; an admin
+    # can still pull someone in deliberately with the Sync button
+    state = meeting_sync.get_sync_state(email)
+    not_enrolled = state is None
+    if state is not None and state.last_error and state.last_synced_at is None:
         error = (
-            f"Couldn't load Microsoft meetings for {user_email}. The account may not exist "
-            "in this Microsoft 365 tenant, or the app lacks permission to read its calendar."
+            f"Couldn't load Microsoft meetings for {email}. The account may not exist in "
+            "this tenant, or the app lacks permission to read its calendar."
         )
-        meetings = []
 
-    from app.models import MOMSent, User as UserModel
+    all_mode = not start_date and not end_date
+    next_offset = None
+    try:
+        if all_mode:
+            list_query = _teams_query(email, keyword, source=source or None)
+            rows = list_query.limit(_ADMIN_PAGE_SIZE + 1).all()
+            if len(rows) > _ADMIN_PAGE_SIZE:
+                next_offset = _ADMIN_PAGE_SIZE
+            rows = rows[:_ADMIN_PAGE_SIZE]
+            list_total = list_query.count()
+        else:
+            start_date, end_date, start, end = _local_range_utc(start_date, end_date)
+            if state and state.synced_from and start < state.synced_from:
+                meeting_sync.ensure_backfill(email, start)
+            rows = _teams_query(email, keyword, start, end, source=source or None).all()
+            list_total = len(rows)
+    except ValueError:
+        flash("Invalid date range.", "warning")
+        return redirect(url_for("main.admin_user_meetings", user_email=email))
+
+    from app.models import User as UserModel
+    db_user = UserModel.query.filter_by(email=email).first()
     sent_keys = set()
-    db_user = UserModel.query.filter_by(email=user_email.lower()).first()
     if db_user:
-        sent_records = db_user.sent_moms.all()
-        for s in sent_records:
-            sent_keys.add(f"{s.subject}|{s.meeting_date}")
+        sent_keys = {f"{s.subject}|{s.meeting_date}" for s in db_user.sent_moms.all()}
+
+    # Summary cards: every source combined for the chosen date range (ignores the source
+    # dropdown, search and the list limit)
+    if all_mode:
+        kpi_query = _teams_query(email, "", source=None)
+    else:
+        _, _, kpi_start, kpi_end = _local_range_utc(start_date, end_date)
+        kpi_query = _teams_query(email, "", kpi_start, kpi_end, source=None)
+    kpi = {"total": 0, "sent": 0, "by_source": {key: 0 for key in meeting_sync.SOURCES}}
+    for subject, start_utc, join_url in kpi_query.with_entities(
+        MeetingRecord.subject, MeetingRecord.start_utc, MeetingRecord.join_url
+    ):
+        kpi["total"] += 1
+        kpi["by_source"][meeting_sync.source_of_join_url(join_url)] += 1
+        if f"{subject}|{timefmt.local_date(start_utc)}" in sent_keys:
+            kpi["sent"] += 1
+    kpi["pending"] = kpi["total"] - kpi["sent"]
 
     return render_template(
         "admin_user_meetings.html",
-        user_email=user_email,
-        user_display_name=user_display_name,
-        meetings=meetings,
+        user_email=email,
+        user_display_name=(db_user.name if db_user and db_user.name else email),
+        meetings=[record_to_meeting(r) for r in rows],
         sent_keys=sent_keys,
-        start_date=start_date,
-        end_date=end_date,
+        start_date="" if all_mode else start_date,
+        end_date="" if all_mode else end_date,
+        keyword=keyword,
+        all_mode=all_mode,
+        next_offset=next_offset,
+        list_total=list_total,
+        last_synced_at=state.last_synced_at if state else None,
         error=error,
+        not_enrolled=not_enrolled,
+        people_home=_people_home(),
+        source=source,
+        sources=meeting_sync.SOURCES,
+        kpi=kpi,
     )
 
 
-# ── Zoom Dashboard ────────────────────────────────────────────
+@main_bp.route("/admin/user-meetings/<path:user_email>/older")
+@staff_required
+def admin_user_meetings_older(user_email):
+    """Next page of an employee's meetings for the admin list (from the database)."""
+    email = _admin_target_email(user_email)
+    try:
+        offset = max(int(request.args.get("offset", "0")), 0)
+    except ValueError:
+        offset = -1
+    if not email or offset < 0:
+        return jsonify({"status": "error", "message": "Bad request."}), 400
+    source = request.args.get("source", "")
+    keyword = request.args.get("keyword", "")
+    rows = _teams_query(
+        email, keyword, source=source if source in meeting_sync.SOURCES else None
+    ).offset(offset).limit(_ADMIN_PAGE_SIZE + 1).all()
+    has_more = len(rows) > _ADMIN_PAGE_SIZE
+    rows = rows[:_ADMIN_PAGE_SIZE]
+
+    from app.models import User as UserModel
+    db_user = UserModel.query.filter_by(email=email).first()
+    sent_keys = {f"{s.subject}|{s.meeting_date}" for s in db_user.sent_moms.all()} if db_user else set()
+    return jsonify({"status": "ok", "data": {
+        "html": render_template(
+            "_admin_rows.html", meetings=[record_to_meeting(r) for r in rows],
+            user_email=email, sent_keys=sent_keys, sources=meeting_sync.SOURCES,
+        ),
+        "count": len(rows),
+        "next_offset": offset + len(rows) if has_more else None,
+    }}), 200
+
+
+@main_bp.route("/admin/user-meetings/<path:user_email>/status", methods=["POST"])
+@staff_required
+def admin_user_meetings_status(user_email):
+    """Transcript/video status for one employee's stored meetings (admin only)."""
+    email = _admin_target_email(user_email)
+    if not email or request.method != "POST" or not request.is_json:
+        return jsonify({"status": "error", "message": "Bad request."}), 400
+    payload = request.get_json(silent=True, force=True) or {}
+    ids = [i for i in payload.get("ids", []) if isinstance(i, str)][:25]
+    records = MeetingRecord.query.filter(
+        MeetingRecord.owner_email == email, MeetingRecord.event_id.in_(ids)
+    ).all() if ids else []
+    unchecked = [r for r in records if r.has_transcript is None]
+    if unchecked:
+        app_token = get_app_token()
+        if not app_token:
+            return jsonify({"status": "error", "message": "Status temporarily unavailable."}), 503
+        try:
+            app_client = GraphClient(app_token)
+            meeting_sync.check_media(
+                app_client, unchecked, email, app_client._resolve_user_id_safe(email) or ""
+            )
+        except Exception:
+            db.session.rollback()
+            logger.exception("admin_user_meetings_status failed for %s", email)
+            return jsonify({"status": "error", "message": "Could not check meetings."}), 502
+    return jsonify({"status": "ok", "data": {
+        r.event_id: {"transcript": bool(r.has_transcript), "video": bool(r.has_recording)}
+        for r in records if r.has_transcript is not None
+    }}), 200
+
+
+@main_bp.route("/admin/user-meetings/<path:user_email>/sync", methods=["POST"])
+@staff_required
+def admin_user_meetings_sync(user_email):
+    """Admin Sync button for one employee (same 60 s cooldown as the user's own button)."""
+    email = _admin_target_email(user_email)
+    if not email or request.method != "POST":
+        return jsonify({"status": "error", "message": "Bad request."}), 400
+    logger.info("Admin %s synced meetings of %s", _current_user_email(), email)
+    result = meeting_sync.sync_user(
+        email, min_age=meeting_sync.MANUAL_SYNC_COOLDOWN, media_limit=0,
+        backfill=False, recheck_recent=True,
+    )
+    if "skipped" in result:
+        return jsonify({"status": "ok", "data": {
+            "skipped": True, "message": "Already up to date (synced less than a minute ago).",
+        }}), 200
+    if "error" in result:
+        return jsonify({"status": "error", "message": "Sync failed. Please try again."}), 502
+    return jsonify({"status": "ok", "data": result}), 200
+
+
+@main_bp.route("/admin/sync-all", methods=["POST"])
+@admin_required
+def admin_sync_all():
+    """Admin panel: sync every org user in the background (returns immediately)."""
+    if request.method != "POST":
+        return jsonify({"status": "error", "message": "POST required."}), 405
+    started, count = meeting_sync.start_sync_all(current_app._get_current_object())
+    logger.info("Admin %s requested sync of all users (started=%s)", _current_user_email(), started)
+    if not started:
+        return jsonify({"status": "ok", "data": {
+            "started": False, "message": "A sync of all users is already running.",
+        }}), 200
+    return jsonify({"status": "ok", "data": {"started": True, "users": count}}), 202
+
+
+@main_bp.route("/admin/user-meetings/<path:user_email>/meeting")
+@staff_required
+def admin_user_meeting(user_email):
+    """Read-only video + transcript of one employee's meeting (admin only, audited in logs)."""
+    email = _admin_target_email(user_email)
+    event_id = request.args.get("event_id", "")
+    back = url_for("main.admin_user_meetings", user_email=email) if email else _people_home()
+    rec = meeting_sync.get_record(email, event_id) if email and event_id else None
+    if rec is None:
+        flash("Meeting not found for this user.", "warning")
+        return redirect(back)
+
+    logger.info("Admin %s opened meeting %r of %s", _current_user_email(), rec.subject, email)
+    meeting = record_to_meeting(rec)
+    app_token = get_app_token()
+    if not app_token:
+        flash("Microsoft access is temporarily unavailable.", "danger")
+        return redirect(back)
+    app_client = GraphClient(app_token)
+
+    is_teams = meeting["source"] == "teams"
+    media = record_media(rec) if rec.has_transcript is not None else None
+    if not is_teams:
+        media = {}  # Google Meet / Zoom: no transcript or recording access from here
+    elif media is None or not media.get("online_meeting_id"):
+        try:
+            media = _lookup_meeting_media(
+                app_client, meeting, _app_user_ids_for_transcript_lookup(app_client, meeting, signed_in_email=email)
+            )
+            meeting_sync.save_media(rec, media)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            logger.exception("Admin media lookup failed for %s", email)
+            media = media or {}
+
+    transcript_text, transcript_lines = "", []
+    if media.get("has_transcript") and media.get("online_meeting_id"):
+        try:
+            uid, mid = media["user_id"], media["online_meeting_id"]
+            transcripts = meeting_sync.for_occurrence(
+                app_client.list_transcripts(mid, user_id=uid), meeting
+            )
+            if transcripts:
+                vtt = app_client.get_transcript_content(mid, transcripts[0]["id"], user_id=uid)
+                if vtt:
+                    entries = parse_vtt_transcript(vtt)
+                    transcript_text = transcript_to_readable(entries)
+                    transcript_lines = transcript_view_lines(entries)
+        except Exception:
+            logger.exception("Admin transcript fetch failed for %s", email)
+
+    recording = _playable_recording(media.get("recording"), rec.event_id, app_client)
+    transcript_text, transcript_lines, recording, uploads = _with_uploads(
+        rec, transcript_text, transcript_lines, recording
+    )
+
+    return render_template(
+        "transcript.html",
+        meeting=meeting,
+        transcript_text=transcript_text,
+        transcript_lines=transcript_lines,
+        recording=recording,
+        attendees_json="[]",
+        error=None,
+        back_url=back,
+        back_label=email,
+        read_only=True,
+        can_upload=True,
+        upload_owner=email,
+        uploads=uploads,
+        source_note=None if is_teams else (
+            f"This is a {meeting_sync.SOURCES[meeting['source']]} meeting. Its recording and "
+            "transcript live in that platform's account, so they can't be shown here."
+        ),
+    )
+
 
 @main_bp.route("/zoom/dashboard")
 @login_required
@@ -1294,9 +1713,9 @@ def zoom_dashboard():
     explicitly_searched = bool(request.args.get("start_date") or request.args.get("end_date"))
 
     if not start_date:
-        start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        start_date = (timefmt.local_today() - timedelta(days=7)).strftime("%Y-%m-%d")
     if not end_date:
-        end_date = datetime.now().strftime("%Y-%m-%d")
+        end_date = timefmt.local_today().strftime("%Y-%m-%d")
 
     user_data = session.get("user", {})
     user_email = (user_data.get("preferred_username") or user_data.get("upn") or "").lower()
@@ -1391,7 +1810,7 @@ def zoom_transcript():
         record_meeting_access(
             email,
             meeting.get("subject", ""),
-            meeting.get("start", {}).get("dateTime", "")[:10],
+            timefmt.local_date(meeting.get("start", {}).get("dateTime", "")),
         )
 
     return render_template(
@@ -1508,9 +1927,9 @@ def google_dashboard():
     keyword = request.args.get("keyword", "").strip().lower()
 
     if not start_date:
-        start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        start_date = (timefmt.local_today() - timedelta(days=7)).strftime("%Y-%m-%d")
     if not end_date:
-        end_date = datetime.now().strftime("%Y-%m-%d")
+        end_date = timefmt.local_today().strftime("%Y-%m-%d")
 
     token = get_token()
     if not token:
@@ -1520,7 +1939,15 @@ def google_dashboard():
     meetings = []
     try:
         gc = GraphClient(token)
-        raw_events = gc.search_google_meet_events(start_date, end_date)
+        # Graph ranges are UTC days; fetch a day either side, keep meetings whose local
+        # (IST) date is inside the chosen range
+        day = timedelta(days=1)
+        wide_start = (datetime.strptime(start_date, "%Y-%m-%d") - day).strftime("%Y-%m-%d")
+        wide_end = (datetime.strptime(end_date, "%Y-%m-%d") + day).strftime("%Y-%m-%d")
+        raw_events = [
+            e for e in gc.search_google_meet_events(wide_start, wide_end)
+            if start_date <= timefmt.local_date((e.get("start") or {}).get("dateTime", "")) <= end_date
+        ]
         if keyword:
             raw_events = [
                 e for e in raw_events
@@ -1604,7 +2031,7 @@ def google_transcript():
     user_data = session.get("user", {})
     user_email = (user_data.get("preferred_username") or user_data.get("upn") or "").lower()
     if user_email:
-        record_meeting_access(user_email, meeting["subject"], meeting["start"]["dateTime"][:10])
+        record_meeting_access(user_email, meeting["subject"], timefmt.local_date(meeting["start"]["dateTime"]))
 
     # Render transcript.html directly — user can type notes or upload a file even if no auto-transcript
     return render_template(

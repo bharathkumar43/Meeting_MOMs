@@ -1,103 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Admin Dashboard - MOM Generator{% endblock %}
 
-{# ── Reusable macro for a user card with meetings table ── #}
-{% macro user_card(user) %}
-{% set raw_meetings = user.meetings.all() %}
-{% set sent_list = user.sent_moms.all() %}
-{% set sent_keys = [] %}
-{% for s in sent_list %}
-    {% if sent_keys.append(s.subject ~ '|' ~ s.meeting_date) %}{% endif %}
-{% endfor %}
-{% set seen = {} %}
-{% set unique_meetings = [] %}
-{% for m in raw_meetings %}
-    {% set key = m.subject ~ '|' ~ m.meeting_date %}
-    {% if key not in seen %}
-        {% if seen.update({key: true}) %}{% endif %}
-        {% if unique_meetings.append(m) %}{% endif %}
-    {% endif %}
-{% endfor %}
-
-<div class="card border-0 shadow-sm mb-4 user-card"
-     data-name="{{ user.name | lower }}"
-     data-email="{{ user.email | lower }}">
-
-    <div class="card-header bg-white border-bottom py-3">
-        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-            <div class="d-flex align-items-center gap-3">
-                <div class="rounded-circle bg-primary d-flex align-items-center justify-content-center text-white fw-bold flex-shrink-0"
-                     style="width:42px;height:42px;font-size:1.1rem;">
-                    {{ user.name[0].upper() if user.name else '?' }}
-                </div>
-                <div>
-                    <div class="fw-semibold">{{ user.name or 'Unknown' }}</div>
-                    <div class="text-muted small">{{ user.email }}</div>
-                </div>
-            </div>
-            <div class="d-flex gap-2 flex-wrap">
-                <span class="badge bg-secondary-subtle text-secondary px-3 py-2">
-                    <i class="bi bi-box-arrow-in-right"></i>
-                    {{ user.login_count }} login{{ 's' if user.login_count != 1 }}
-                </span>
-                <span class="badge bg-primary-subtle text-primary px-3 py-2">
-                    <i class="bi bi-camera-video"></i>
-                    {{ unique_meetings|length }} meeting{{ 's' if unique_meetings|length != 1 }}
-                </span>
-                <span class="badge bg-success-subtle text-success px-3 py-2">
-                    <i class="bi bi-send-check"></i>
-                    {{ user.sent_moms.count() }} sent
-                </span>
-                <a href="{{ url_for('main.admin_user_meetings', user_email=user.email) }}"
-                   class="btn btn-sm btn-outline-primary ms-1">
-                    <i class="bi bi-eye"></i> View Meetings
-                </a>
-            </div>
-        </div>
-        <div class="mt-2 small text-muted d-flex gap-3 flex-wrap">
-            <span><i class="bi bi-calendar-plus"></i> First login: {{ user.first_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
-            <span><i class="bi bi-clock-history"></i> Last login: {{ user.last_login.strftime('%Y-%m-%d %H:%M') }} UTC</span>
-        </div>
-    </div>
-
-    {% if unique_meetings %}
-    <div class="card-body p-0">
-        <table class="table table-hover mb-0 small align-middle">
-            <thead class="table-light">
-                <tr>
-                    <th class="ps-3" style="width:40px">#</th>
-                    <th>Meeting Subject</th>
-                    <th style="width:120px">Meeting Date</th>
-                    <th style="width:175px">Last Accessed</th>
-                    <th style="width:100px" class="text-center">Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for m in unique_meetings %}
-                <tr>
-                    <td class="ps-3 text-muted">{{ loop.index }}</td>
-                    <td>{{ m.subject or '—' }}</td>
-                    <td>{{ m.meeting_date or '—' }}</td>
-                    <td class="text-muted">{{ m.accessed_at.strftime('%Y-%m-%d %H:%M') }} UTC</td>
-                    <td class="text-center">
-                        {% if (m.subject ~ '|' ~ m.meeting_date) in sent_keys %}
-                            <span class="badge bg-success">Sent</span>
-                        {% else %}
-                            <span class="badge bg-warning text-dark">Pending</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% else %}
-    <div class="card-body text-muted small py-3">
-        <i class="bi bi-info-circle"></i> No meetings accessed yet.
-    </div>
-    {% endif %}
-</div>
-{% endmacro %}
 
 {% block content %}
 <div class="page-header">
@@ -107,6 +10,14 @@
             Admin Dashboard
         </h1>
     </div>
+    <div class="page-actions align-items-center">
+        <span class="text-muted small" id="syncAllStatus"></span>
+        <button type="button" class="btn btn-sm btn-light-outline" id="syncAllBtn"
+                data-sync-url="{{ url_for('main.admin_sync_all') }}"
+                title="Refresh every user's meetings from Microsoft now">
+            <i class="bi bi-arrow-repeat"></i> <span>Sync all users</span>
+        </button>
+    </div>
 </div>
 
 <div class="row g-3 mb-4">
@@ -115,7 +26,6 @@
         ('Meetings accessed', total_meetings, 'bi-folder2-open', 'kpi-violet'),
         ('MOMs sent', total_sent, 'bi-send-check', 'kpi-green'),
         ('MOMs pending', total_pending, 'bi-hourglass-split', 'kpi-amber'),
-        ('Total logins', users | selectattr('login_count') | list | sum(attribute='login_count'), 'bi-box-arrow-in-right', 'kpi-red'),
     ] %}
     {% for label, value, icon, tone in kpis %}
     <div class="col-sm-6 col-lg">
@@ -127,63 +37,6 @@
     {% endfor %}
 </div>
 
-        <!-- Tabs -->
-        <ul class="nav nav-tabs mb-4" id="adminTabs" role="tablist">
-            <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="overview-tab" data-bs-toggle="tab"
-                        data-bs-target="#overview" type="button" role="tab">
-                    <i class="bi bi-grid-3x3-gap"></i> Overview
-                    <span class="badge bg-primary ms-1">{{ total_users }}</span>
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="individual-tab" data-bs-toggle="tab"
-                        data-bs-target="#individual" type="button" role="tab">
-                    <i class="bi bi-person-lines-fill"></i> Individual Data
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="audit-report-tab" data-bs-toggle="tab"
-                        data-bs-target="#audit-report" type="button" role="tab">
-                    <i class="bi bi-file-earmark-bar-graph"></i> Audit Report
-                    <span class="badge bg-dark ms-1">{{ audit_totals.users }}</span>
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="pending-tab" data-bs-toggle="tab"
-                        data-bs-target="#pending" type="button" role="tab">
-                    <i class="bi bi-clock-history"></i> Pending MOMs
-                    {% if total_pending > 0 %}
-                    <span class="badge bg-danger ms-1">{{ total_pending }}</span>
-                    {% endif %}
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="sent-tab" data-bs-toggle="tab"
-                        data-bs-target="#sent" type="button" role="tab">
-                    <i class="bi bi-check2-circle"></i> Sent MOMs
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="managers-tab" data-bs-toggle="tab"
-                        data-bs-target="#managersPane" type="button" role="tab">
-                    <i class="bi bi-person-badge"></i> Migration Managers
-                    <span class="badge bg-primary ms-1">{{ managers|length }}</span>
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="others-tab" data-bs-toggle="tab"
-                        data-bs-target="#othersPane" type="button" role="tab">
-                    <i class="bi bi-people"></i> Other Employees
-                    <span class="badge bg-secondary ms-1">{{ non_managers|length }}</span>
-                </button>
-            </li>
-        </ul>
-
-        <div class="tab-content" id="adminTabContent">
-
-            <!-- ── Overview Tab (default) ── -->
-            <div class="tab-pane fade show active" id="overview" role="tabpanel">
 
                 <div class="mb-3">
                     <input type="text" id="overviewSearch" class="form-control"
@@ -195,315 +48,82 @@
                     <div class="card-body p-0">
                         <div class="table-responsive">
                             <table class="table table-hover align-middle mb-0" id="overviewTable">
-                                <thead class="table-light">
+                                <thead>
                                     <tr>
-                                        <th class="ps-3" style="width:36px">#</th>
-                                        <th>Name / Email</th>
-                                        <th style="width:110px">Role</th>
-                                        <th class="text-center" style="width:90px">Logins</th>
-                                        <th class="text-center" style="width:110px">Last Login</th>
-                                        <th class="text-center" style="width:100px">Meetings</th>
-                                        <th class="text-center" style="width:90px">Sent</th>
-                                        <th class="text-center" style="width:90px">Pending</th>
-                                        <th style="width:160px">MOM Rate</th>
-                                        <th style="width:90px"></th>
+                                        <th>Name</th>
+                                        <th>Role</th>
+                                        <th>Manager</th>
+                                        <th>Last login</th>
+                                        <th>Meeting sync</th>
                                     </tr>
                                 </thead>
                                 <tbody id="overviewBody">
                                     {% for u in user_dashboard_stats %}
-                                    {% set total = u.sent + u.pending %}
-                                    {% set pct = ((u.sent / total * 100) | int) if total > 0 else 0 %}
                                     <tr class="overview-row"
+                                        data-href="{{ url_for('main.admin_user_meetings', user_email=u.email) }}" tabindex="0"
                                         data-name="{{ u.name | lower }}"
                                         data-email="{{ u.email | lower }}">
-                                        <td class="ps-3 text-muted">{{ loop.index }}</td>
                                         <td>
-                                            <div class="fw-semibold">{{ u.name or 'Unknown' }}</div>
-                                            <div class="text-muted small">{{ u.email }}</div>
-                                        </td>
-                                        <td>
-                                            {% if u.is_manager %}
-                                            <span class="badge bg-primary-subtle text-primary">Manager</span>
-                                            {% else %}
-                                            <span class="badge bg-secondary-subtle text-secondary">Employee</span>
-                                            {% endif %}
-                                        </td>
-                                        <td class="text-center">
-                                            <span class="badge bg-light text-dark border">{{ u.login_count }}</span>
-                                        </td>
-                                        <td class="text-center small text-muted">
-                                            {{ u.last_login.strftime('%Y-%m-%d') if u.last_login else '—' }}
-                                        </td>
-                                        <td class="text-center">
-                                            <span class="badge bg-info-subtle text-info fs-6 px-2">{{ u.meetings }}</span>
-                                        </td>
-                                        <td class="text-center">
-                                            <span class="badge bg-success-subtle text-success fs-6 px-2">{{ u.sent }}</span>
-                                        </td>
-                                        <td class="text-center">
-                                            {% if u.pending > 0 %}
-                                            <span class="badge bg-danger-subtle text-danger fs-6 px-2">{{ u.pending }}</span>
-                                            {% else %}
-                                            <span class="badge bg-success-subtle text-success fs-6 px-2">0</span>
-                                            {% endif %}
-                                        </td>
-                                        <td>
-                                            {% if total > 0 %}
-                                            <div class="d-flex align-items-center gap-2">
-                                                <div class="progress flex-grow-1" style="height:8px">
-                                                    <div class="progress-bar {{ 'bg-success' if pct == 100 else 'bg-primary' }}"
-                                                         style="width:{{ pct }}%"></div>
+                                            <div class="d-flex align-items-center gap-3">
+                                                <span class="avatar">{{ ((u.name or u.email)[:1]) | upper }}</span>
+                                                <div class="min-w-0">
+                                                    <a class="row-link meeting-subject" href="{{ url_for('main.admin_user_meetings', user_email=u.email) }}">{{ u.name or 'Unknown' }}</a>
+                                                    <div class="text-muted small">{{ u.email }}</div>
                                                 </div>
-                                                <small class="text-muted" style="width:32px">{{ pct }}%</small>
                                             </div>
-                                            {% else %}
-                                            <small class="text-muted">No meetings</small>
-                                            {% endif %}
                                         </td>
+                                        {% set em = u.email | lower %}
+                                        {% set role = user_roles.get(em, 'employee') %}
+                                        {% set assignable = em.endswith(org_suffix) %}
                                         <td>
-                                            <a href="{{ url_for('main.admin_user_meetings', user_email=u.email) }}"
-                                               class="btn btn-sm btn-outline-primary">
-                                                <i class="bi bi-eye"></i> View
-                                            </a>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-                {% else %}
-                <div class="card border-0 shadow-sm">
-                    <div class="card-body text-center py-5 text-muted">
-                        <i class="bi bi-people display-4 d-block mb-2"></i>
-                        No employees have signed in yet.
-                    </div>
-                </div>
-                {% endif %}
-            </div>
-
-            <!-- ── Individual Data Tab ── -->
-            <div class="tab-pane fade" id="individual" role="tabpanel">
-                <div class="mb-3">
-                    <input type="text" class="form-control search-field" data-target="allUsersList"
-                           placeholder="Search by name or email...">
-                </div>
-
-                {% if not users %}
-                <div class="card border-0 shadow-sm">
-                    <div class="card-body text-center py-5 text-muted">
-                        <i class="bi bi-people display-4 d-block mb-2"></i>
-                        No employees have signed in yet.
-                    </div>
-                </div>
-                {% else %}
-                <div id="allUsersList">
-                    {% for user in users %}
-                        {{ user_card(user) }}
-                    {% endfor %}
-                </div>
-                {% endif %}
-            </div>
-
-            <!-- ── Audit Report (rolling window) ── -->
-            <div class="tab-pane fade" id="audit-report" role="tabpanel">
-                <div class="card border-0 shadow-sm mb-3">
-                    <div class="card-header bg-white border-bottom py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
-                        <div>
-                            <span class="fw-semibold">
-                                <i class="bi bi-calendar-range"></i> Rolling {{ audit_days }}-day audit
-                            </span>
-                            <p class="text-muted small mb-0 mt-1">
-                                Users who signed in during this period; meeting counts use access/send timestamps in the same window.
-                            </p>
-                        </div>
-                        <form method="POST" action="{{ url_for('main.admin_send_audit_report') }}" class="m-0">
-                            <button type="submit" class="btn btn-primary"
-                                    {% if not audit_can_send %}disabled title="Set AUDIT_SENDER_MAILBOX and AUDIT_REPORT_RECIPIENTS in .env"{% endif %}>
-                                <i class="bi bi-envelope-paper"></i> Send audit report by email
-                            </button>
-                        </form>
-                    </div>
-                    <div class="card-body">
-                        {% if not audit_can_send %}
-                        <div class="alert alert-warning py-2 small mb-3">
-                            Configure <code>AUDIT_SENDER_MAILBOX</code> and <code>AUDIT_REPORT_RECIPIENTS</code> in <code>.env</code> to enable sending.
-                            Cron can still use <code>AUDIT_REPORT_ENABLED=true</code>; the button sends regardless of that flag.
-                        </div>
-                        {% else %}
-                        <p class="small text-muted mb-3">
-                            <strong>From:</strong> {{ audit_sender_display }}<br>
-                            <strong>To:</strong> {{ audit_recipients_display }}
-                        </p>
-                        {% endif %}
-
-                        <div class="row g-3 mb-4">
-                            <div class="col-6 col-md-3">
-                                <div class="border rounded p-3 text-center">
-                                    <div class="fs-4 fw-bold text-primary">{{ audit_totals.users }}</div>
-                                    <div class="text-muted small">Users (logged in)</div>
-                                </div>
-                            </div>
-                            <div class="col-6 col-md-3">
-                                <div class="border rounded p-3 text-center">
-                                    <div class="fs-4 fw-bold text-info">{{ audit_totals.meetings_opened }}</div>
-                                    <div class="text-muted small">Meetings opened</div>
-                                </div>
-                            </div>
-                            <div class="col-6 col-md-3">
-                                <div class="border rounded p-3 text-center">
-                                    <div class="fs-4 fw-bold text-warning">{{ audit_totals.pending }}</div>
-                                    <div class="text-muted small">Pending send</div>
-                                </div>
-                            </div>
-                            <div class="col-6 col-md-3">
-                                <div class="border rounded p-3 text-center">
-                                    <div class="fs-4 fw-bold text-success">{{ audit_totals.sent }}</div>
-                                    <div class="text-muted small">MOMs sent</div>
-                                </div>
-                            </div>
-                        </div>
-
-                        {% if audit_rows %}
-                        <div class="table-responsive">
-                            <table class="table table-hover table-sm align-middle mb-0">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th class="ps-3">Name</th>
-                                        <th>Email</th>
-                                        <th class="text-end">Meetings opened</th>
-                                        <th class="text-end">Pending</th>
-                                        <th class="text-end pe-3">Sent</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for r in audit_rows %}
-                                    <tr>
-                                        <td class="ps-3 fw-semibold">{{ r.name or '—' }}</td>
-                                        <td class="text-muted small">{{ r.email }}</td>
-                                        <td class="text-end">{{ r.meetings_opened }}</td>
-                                        <td class="text-end">{{ r.pending }}</td>
-                                        <td class="text-end pe-3">{{ r.sent }}</td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                        {% else %}
-                        <p class="text-muted mb-0"><i class="bi bi-info-circle"></i> No users logged in during this {{ audit_days }}-day window.</p>
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
-
-            <!-- ── Pending MOMs Tab ── -->
-            <div class="tab-pane fade" id="pending" role="tabpanel">
-                {% if pending_moms %}
-                <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white border-bottom py-3">
-                        <span class="fw-semibold text-danger">
-                            <i class="bi bi-exclamation-triangle"></i>
-                            {{ total_pending }} meeting{{ 's' if total_pending != 1 }} accessed but MOM not sent
-                        </span>
-                        {% if manager_pending %}
-                        <span class="badge bg-danger-subtle text-danger ms-2">
-                            {{ manager_pending|length }} from managers
-                        </span>
-                        {% endif %}
-                    </div>
-                    <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table table-hover mb-0 align-middle">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th class="ps-3" style="width:40px">#</th>
-                                        <th>Employee</th>
-                                        <th>Meeting Subject</th>
-                                        <th style="width:120px">Meeting Date</th>
-                                        <th style="width:175px">Accessed At (UTC)</th>
-                                        <th style="width:80px" class="text-center">Role</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for m in pending_moms %}
-                                    <tr>
-                                        <td class="ps-3 text-muted">{{ loop.index }}</td>
-                                        <td>
-                                            <div class="fw-semibold">{{ m.user_name }}</div>
-                                            <div class="text-muted small">{{ m.user_email }}</div>
-                                        </td>
-                                        <td>{{ m.subject or '—' }}</td>
-                                        <td>{{ m.meeting_date or '—' }}</td>
-                                        <td class="text-muted small">{{ m.accessed_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                                        <td class="text-center">
-                                            {% if m.user_email in manager_pending|map(attribute='user_email')|list %}
-                                                <span class="badge bg-primary-subtle text-primary">Manager</span>
-                                            {% else %}
-                                                <span class="badge bg-secondary-subtle text-secondary">Other</span>
-                                            {% endif %}
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-                {% else %}
-                <div class="card border-0 shadow-sm">
-                    <div class="card-body text-center py-5 text-muted">
-                        <i class="bi bi-check-circle display-4 text-success d-block mb-2"></i>
-                        No pending MOMs. All accessed meetings have been sent.
-                    </div>
-                </div>
-                {% endif %}
-            </div>
-
-            <!-- ── Sent MOMs Tab ── -->
-            <div class="tab-pane fade" id="sent" role="tabpanel">
-                {% if sent_moms %}
-                <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white border-bottom py-3">
-                        <span class="fw-semibold text-success">
-                            <i class="bi bi-send-check"></i>
-                            {{ total_sent }} MOM{{ 's' if total_sent != 1 }} sent to customers
-                        </span>
-                        {% if manager_sent %}
-                        <span class="badge bg-success-subtle text-success ms-2">
-                            {{ manager_sent|length }} by managers
-                        </span>
-                        {% endif %}
-                    </div>
-                    <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table table-hover mb-0 align-middle">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th class="ps-3" style="width:40px">#</th>
-                                        <th>Sent By</th>
-                                        <th>Meeting Subject</th>
-                                        <th style="width:120px">Meeting Date</th>
-                                        <th>Sent To</th>
-                                        <th style="width:175px">Sent At (UTC)</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for m in sent_moms %}
-                                    <tr>
-                                        <td class="ps-3 text-muted">{{ loop.index }}</td>
-                                        <td>
-                                            <div class="fw-semibold">{{ m.user_name }}</div>
-                                            <div class="text-muted small">{{ m.user_email }}</div>
-                                        </td>
-                                        <td>{{ m.subject or '—' }}</td>
-                                        <td>{{ m.meeting_date or '—' }}</td>
-                                        <td>
-                                            <span class="badge bg-success-subtle text-success">
-                                                {{ m.sent_to }}
+                                            {% if em in locked_admins %}
+                                            <span class="badge bg-danger-subtle text-danger" title="Set in the server configuration">
+                                                <i class="bi bi-shield-lock"></i> Admin
                                             </span>
+                                            {% elif assignable %}
+                                            <select class="form-select form-select-sm role-select" data-role-email="{{ em }}" aria-label="Role for {{ u.email }}">
+                                                {% for key in ('employee', 'manager', 'admin') %}
+                                                <option value="{{ key }}" {{ 'selected' if role == key }}>{{ role_labels[key] }}</option>
+                                                {% endfor %}
+                                            </select>
+                                            {% else %}
+                                            <span class="badge bg-secondary-subtle text-secondary">{{ role_labels[role] }}</span>
+                                            {% endif %}
                                         </td>
-                                        <td class="text-muted small">{{ m.sent_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                        <td>
+                                            {% if assignable and role == 'employee' %}
+                                            <select class="form-select form-select-sm manager-select" data-manager-email="{{ em }}" aria-label="Manager for {{ u.email }}">
+                                                <option value="">&mdash; No manager &mdash;</option>
+                                                {% for m_email, m_name in manager_choices %}
+                                                {% if m_email != em %}
+                                                <option value="{{ m_email }}" {{ 'selected' if user_managers.get(em) == m_email }}>{{ m_name }}</option>
+                                                {% endif %}
+                                                {% endfor %}
+                                            </select>
+                                            {% else %}
+                                            <span class="text-muted small">&mdash;</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            {% if u.last_login %}
+                                            <div class="date-main">{{ u.last_login | local_dt('%a, %d %b %Y') }}</div>
+                                            {% set ago = u.last_login | time_ago %}
+                                            <div class="date-sub">{{ u.last_login | local_dt('%H:%M') }} {{ tz_name }}{% if ago.endswith('ago') or ago == 'just now' %} &middot; {{ ago }}{% endif %}</div>
+                                            {% else %}&mdash;{% endif %}
+                                        </td>
+                                        <td>
+                                            {% set st = sync_states.get(u.email | lower) %}
+                                            {% if st and st.last_error and not st.last_synced_at %}
+                                            <span class="status-pill status-pending" title="{{ st.last_error }}">Sync failed</span>
+                                            {% elif st and st.last_synced_at %}
+                                            <span class="status-pill status-ok">Synced</span>
+                                            <div class="date-sub mt-1">{{ st.last_synced_at | time_ago }}</div>
+                                            {% elif st %}
+                                            <span class="status-pill status-loading">Syncing…</span>
+                                            {% else %}
+                                            <span class="status-pill status-manual" title="Hasn't signed in since meeting sync was enabled">Not synced</span>
+                                            {% endif %}
+                                        </td>
                                     </tr>
                                     {% endfor %}
                                 </tbody>
@@ -514,67 +134,82 @@
                 {% else %}
                 <div class="card border-0 shadow-sm">
                     <div class="card-body text-center py-5 text-muted">
-                        <i class="bi bi-envelope display-4 d-block mb-2"></i>
-                        No MOMs have been sent yet.
+                        <i class="bi bi-people display-4 d-block mb-2"></i>
+                        No employees have signed in yet.
                     </div>
                 </div>
                 {% endif %}
-            </div>
-
-            <!-- ── Migration Managers Tab ── -->
-            <div class="tab-pane fade" id="managersPane" role="tabpanel">
-
-                <div class="mb-3">
-                    <input type="text" class="form-control search-field" data-target="managerList"
-                           placeholder="Search managers by name or email...">
-                </div>
-
-                {% if not managers %}
-                <div class="card border-0 shadow-sm">
-                    <div class="card-body text-center py-5 text-muted">
-                        <i class="bi bi-person-badge fs-1 d-block mb-2"></i>
-                        No migration managers have signed in yet.
-                        <br><small>Add manager emails to <code>MANAGER_EMAILS</code> in .env</small>
-                    </div>
-                </div>
-                {% else %}
-                <div id="managerList">
-                    {% for user in managers %}
-                        {{ user_card(user) }}
-                    {% endfor %}
-                </div>
-                {% endif %}
-            </div>
-
-            <!-- ── Other Employees Tab ── -->
-            <div class="tab-pane fade" id="othersPane" role="tabpanel">
-
-                <div class="mb-3">
-                    <input type="text" class="form-control search-field" data-target="othersList"
-                           placeholder="Search employees by name or email...">
-                </div>
-
-                {% if not non_managers %}
-                <div class="card border-0 shadow-sm">
-                    <div class="card-body text-center py-5 text-muted">
-                        <i class="bi bi-people fs-1 d-block mb-2"></i>
-                        No other employees have signed in yet.
-                    </div>
-                </div>
-                {% else %}
-                <div id="othersList">
-                    {% for user in non_managers %}
-                        {{ user_card(user) }}
-                    {% endfor %}
-                </div>
-                {% endif %}
-            </div>
-
-        </div>
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/filters.js') }}"></script>
 <script>
+/* Sync all users (runs in the background on the server) */
+(function () {
+    var btn = document.getElementById('syncAllBtn');
+    var status = document.getElementById('syncAllStatus');
+    if (!btn) { return; }
+    btn.addEventListener('click', async function () {
+        btn.disabled = true;
+        btn.querySelector('.bi').classList.add('spin');
+        status.textContent = 'Starting…';
+        try {
+            var res = await fetch(btn.dataset.syncUrl, {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            var body = await res.json().catch(function () { return {}; });
+            if (res.ok && body.status === 'ok') {
+                status.textContent = body.data.started
+                    ? 'Syncing ' + body.data.users + ' users in the background — this can take a few minutes.'
+                    : body.data.message;
+            } else {
+                status.textContent = 'Could not start sync.';
+            }
+        } catch (err) {
+            status.textContent = 'Could not start sync.';
+        }
+        btn.querySelector('.bi').classList.remove('spin');
+        setTimeout(function () { btn.disabled = false; }, 60000);
+    });
+})();
+
+/* Role / manager assignment (admin only; saved immediately) */
+(function () {
+    var table = document.getElementById('overviewTable');
+    var baseUrl = {{ url_for('main.admin_set_role', user_email='__EMAIL__') | tojson }};
+    if (!table) { return; }
+    async function save(email, body, select) {
+        select.disabled = true;
+        try {
+            var res = await fetch(baseUrl.replace('__EMAIL__', encodeURIComponent(email)), {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify(body)
+            });
+            var data = await res.json().catch(function () { return {}; });
+            if (!res.ok || data.status !== 'ok') {
+                alert(data.message || 'Could not save.');
+                window.location.reload();
+                return;
+            }
+            // Role changes alter who can be picked as a manager: refresh the table
+            if ('role' in body) { window.location.reload(); return; }
+            select.classList.add('is-valid');
+            setTimeout(function () { select.classList.remove('is-valid'); }, 1200);
+        } catch (err) {
+            alert('Could not save. Check your connection.');
+        }
+        select.disabled = false;
+    }
+    table.querySelectorAll('.role-select').forEach(function (sel) {
+        sel.addEventListener('change', function () { save(sel.dataset.roleEmail, { role: sel.value }, sel); });
+    });
+    table.querySelectorAll('.manager-select').forEach(function (sel) {
+        sel.addEventListener('change', function () { save(sel.dataset.managerEmail, { manager: sel.value }, sel); });
+    });
+})();
+
 /* Overview table search */
 document.getElementById('overviewSearch').addEventListener('input', function () {
     const q = this.value.toLowerCase();
@@ -584,36 +219,5 @@ document.getElementById('overviewSearch').addEventListener('input', function () 
         row.style.display = (!q || name.includes(q) || email.includes(q)) ? '' : 'none';
     });
 });
-
-/* User-card list search (Individual Data, Managers, Others tabs) */
-document.querySelectorAll('.search-field').forEach(function (input) {
-    input.addEventListener('input', function () {
-        const q = this.value.toLowerCase();
-        const targetId = this.dataset.target;
-        const container = document.getElementById(targetId);
-        if (!container) return;
-        container.querySelectorAll('.user-card').forEach(function (card) {
-            const name = card.dataset.name || '';
-            const email = card.dataset.email || '';
-            card.style.display = (name.includes(q) || email.includes(q)) ? '' : 'none';
-        });
-    });
-});
-
-/* Restore tab from URL hash */
-const hashTabMap = {
-    '#audit-report': '[data-bs-target="#audit-report"]',
-    '#overview':     '[data-bs-target="#overview"]',
-    '#individual':   '[data-bs-target="#individual"]',
-    '#pending':      '[data-bs-target="#pending"]',
-    '#sent':         '[data-bs-target="#sent"]',
-};
-const hash = window.location.hash;
-if (hash && hashTabMap[hash]) {
-    const tabBtn = document.querySelector(hashTabMap[hash]);
-    if (tabBtn && typeof bootstrap !== 'undefined') {
-        new bootstrap.Tab(tabBtn).show();
-    }
-}
 </script>
 {% endblock %}

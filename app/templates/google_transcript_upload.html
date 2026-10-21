@@ -36,10 +36,10 @@
                         <div class="text-muted small">
                             {% if meeting.start.dateTime %}
                             <i class="bi bi-calendar3 me-1"></i>
-                            {{ meeting.start.dateTime[:10] }}
-                            {% if meeting.start.dateTime[11:16] %}
-                            &nbsp;{{ meeting.start.dateTime[11:16] }}
-                            {% if meeting.end.dateTime %} – {{ meeting.end.dateTime[11:16] }}{% endif %} UTC
+                            {{ meeting.start.dateTime | local_date }}
+                            {% if meeting.start.dateTime %}
+                            &nbsp;{{ meeting.start.dateTime | hm }}
+                            {% if meeting.end.dateTime %} – {{ meeting.end.dateTime | hm }}{% endif %} {{ tz_name }}
                             {% endif %}
                             {% endif %}
                             {% if meeting.organizer.emailAddress.address %}
@@ -92,7 +92,7 @@
                     <!-- Hidden meeting fields -->
                     <input type="hidden" name="event_id" value="{{ meeting.id }}">
                     <input type="hidden" name="subject" value="{{ meeting.subject }}">
-                    <input type="hidden" name="meeting_date" value="{{ meeting.start.dateTime[:10] if meeting.start.dateTime else '' }}">
+                    <input type="hidden" name="meeting_date" value="{{ (meeting.start.dateTime | local_date) if meeting.start.dateTime else '' }}">
                     <input type="hidden" name="end_dt" value="{{ meeting.end.dateTime }}">
                     <input type="hidden" name="organizer_name" value="{{ meeting.organizer.emailAddress.name }}">
                     <input type="hidden" name="organizer_email" value="{{ meeting.organizer.emailAddress.address }}">

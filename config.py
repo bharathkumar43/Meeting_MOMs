@@ -33,6 +33,28 @@ class Config:
 
     ORG_DOMAIN = os.getenv("ORG_DOMAIN", "cloudfuze.com")
 
+    # Teams meeting sync (app/meeting_sync.py)
+    # First sync stores the last N days; afterwards every new meeting is kept permanently.
+    SYNC_INITIAL_DAYS = int(os.getenv("SYNC_INITIAL_DAYS", "30"))
+    # false = never fetch history older than the first sync window
+    SYNC_BACKFILL_ENABLED = os.getenv("SYNC_BACKFILL_ENABLED", "false").lower() == "true"
+    SYNC_BACKFILL_DAYS = int(os.getenv("SYNC_BACKFILL_DAYS", "365"))
+    # 0 = sync every org user who has ever signed in (no one's meetings are missed)
+    SYNC_ACTIVE_USER_DAYS = int(os.getenv("SYNC_ACTIVE_USER_DAYS", "0"))
+    SYNC_MEDIA_CHECKS_PER_RUN = int(os.getenv("SYNC_MEDIA_CHECKS_PER_RUN", "60"))
+
+    # Manually uploaded meeting videos (private folder, never under static/)
+    UPLOAD_DIR = os.getenv(
+        "UPLOAD_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+    )
+    VIDEO_UPLOAD_MAX_BYTES = int(os.getenv("VIDEO_UPLOAD_MAX_MB", "1024")) * 1024 * 1024
+    # Largest request Flask accepts (video limit + headroom for the form)
+    MAX_CONTENT_LENGTH = VIDEO_UPLOAD_MAX_BYTES + 10 * 1024 * 1024
+
+    # Time zone used for every time shown in the app and in MOM documents (default IST)
+    DISPLAY_TZ_NAME = os.getenv("DISPLAY_TZ_NAME", "IST")
+    DISPLAY_TZ_OFFSET_MINUTES = int(os.getenv("DISPLAY_TZ_OFFSET_MINUTES", "330"))
+
     MEETING_KEYWORDS = [
         kw.strip()
         for kw in os.getenv(

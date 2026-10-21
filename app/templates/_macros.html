@@ -9,7 +9,8 @@
 #}
 {% macro filter_bar(endpoint, start_date, end_date, keyword='', target='#meetingsTable',
                     show_status=True, url_args={}, placeholder='Search meetings, organizers or attendees…',
-                    loaded=True, show_video=False, include_all=False, default_preset='7 days') %}
+                    loaded=True, show_video=False, include_all=False, default_preset='7 days',
+                    sources=None, source='') %}
 {% set today = date_presets.today %}
 {% set ns = namespace(preset=None) %}
 {% if include_all and loaded and not start_date and not end_date %}{% set ns.preset = 'All' %}{% endif %}
@@ -28,6 +29,16 @@
             <input type="search" class="form-control" name="keyword" value="{{ keyword or '' }}"
                    placeholder="{{ placeholder }}" autocomplete="off" data-filter-search>
         </label>
+
+        {% if sources %}
+        <label class="visually-hidden" for="fSource">Source</label>
+        <select class="form-select source-select" id="fSource" name="source" data-autosubmit>
+            <option value="" {{ 'selected' if not source }}>All sources</option>
+            {% for key, label in sources.items() %}
+            <option value="{{ key }}" {{ 'selected' if source == key }}>{{ label }}</option>
+            {% endfor %}
+        </select>
+        {% endif %}
 
         <button class="btn btn-light-outline filter-toggle" type="button" data-bs-toggle="collapse"
                 data-bs-target="#filterPanel" aria-expanded="false" aria-controls="filterPanel">
@@ -101,11 +112,14 @@
 
 
 {# "Showing X of Y meetings" line above a filtered table. #}
-{% macro results_meta(total, noun='meeting', extra='') %}
+{# grand_total: full number of matching rows when the list is paged (loaded rows < total) #}
+{% macro results_meta(total, noun='meeting', extra='', grand_total=None) %}
+{% set overall = grand_total if grand_total is not none else total %}
 <div class="results-meta">
     <span>
-        Showing <strong data-filter-count>{{ total }}</strong> of <strong data-filter-total>{{ total }}</strong>
-        {{ noun }}{{ 's' if total != 1 }}
+        Showing <strong data-filter-count>{{ total }}</strong> of
+        <strong data-filter-total {% if grand_total is not none %}data-fixed{% endif %}>{{ overall }}</strong>
+        {{ noun }}{{ 's' if overall != 1 }}
     </span>
     {% if extra %}<span>{{ extra }}</span>{% endif %}
 </div>

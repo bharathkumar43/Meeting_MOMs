@@ -26,26 +26,81 @@ from sqlalchemy import or_, update
 
 from app import db
 from app.auth import get_app_token
-from app.graph_client import GraphClient
+from app.graph_client import GraphClient, clear_recording_search_cache
 from app.meeting_filter import filter_customer_meetings
-from app.models import CalendarSync, MeetingRecord, User
+from app.models import CalendarSync, MeetingRecord, MeetingUpload, User
 from config import Config
 
 logger = logging.getLogger(__name__)
 
 SYNC_INTERVAL = timedelta(minutes=15)
-RECENT_WINDOW_DAYS = 30          # re-read every sync (new / changed / cancelled meetings)
-BACKFILL_DAYS = 365              # how far back history is filled in
+# Re-read every sync (new / changed / cancelled meetings); also the first-sync window.
+RECENT_WINDOW_DAYS = Config.SYNC_INITIAL_DAYS
+# History older than the first window is only fetched when backfill is enabled.
+BACKFILL_ENABLED = Config.SYNC_BACKFILL_ENABLED
+BACKFILL_DAYS = Config.SYNC_BACKFILL_DAYS
 BACKFILL_CHUNK_DAYS = 60         # history fetched per sync run
 RECHECK_RECENT_DAYS = 14         # meetings this recent are re-checked for late transcripts
 RECHECK_AFTER = timedelta(minutes=15)
 RECHECK_NO_RECORDING_API_AFTER = timedelta(hours=6)  # recordings API refused (permission)
-MEDIA_CHECKS_PER_RUN = 60
-ACTIVE_USER_DAYS = 30            # background sync only for users who signed in recently
+MEDIA_CHECKS_PER_RUN = Config.SYNC_MEDIA_CHECKS_PER_RUN
+ACTIVE_USER_DAYS = Config.SYNC_ACTIVE_USER_DAYS  # 0 = every org user who ever signed in
 STALE_LOCK_AFTER = timedelta(minutes=10)
 MANUAL_SYNC_COOLDOWN = timedelta(seconds=60)
 ONEDRIVE_FALLBACK_BUDGET_SECONDS = 6
 LOOP_TICK_SECONDS = 60
+
+
+# ── Meeting source (Teams / Google Meet / Zoom) ─────────────────────────────
+
+SOURCES = {"teams": "Teams", "google": "Google Meet", "zoom": "Zoom"}
+_TEAMS_HOSTS = ("teams.microsoft.com", "teams.live.com")
+_LINK_PATTERNS = {
+    "google": re.compile(r"https?://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}", re.I),
+    "zoom": re.compile(r"https?://[\w.-]*zoom\.us/(?:j|my|w)/[\w./?=&%-]+", re.I),
+}
+# SQL LIKE patterns used to filter stored rows by source (via their join link)
+SOURCE_LIKE = {
+    "teams": ["%teams.microsoft.com%", "%teams.live.com%"],
+    "google": ["%meet.google.com%"],
+    "zoom": ["%zoom.us%"],
+}
+
+
+def classify_event(event: dict) -> tuple[str, str] | None:
+    """(source, join link) for a calendar event, or None if it isn't an online meeting."""
+    join = (event.get("onlineMeeting") or {}).get("joinUrl") or ""
+    if event.get("isOnlineMeeting") and any(h in join for h in _TEAMS_HOSTS):
+        return "teams", join
+    text = " ".join([
+        (event.get("location") or {}).get("displayName") or "",
+        event.get("onlineMeetingUrl") or "",
+        event.get("bodyPreview") or "",
+    ])
+    for source, pattern in _LINK_PATTERNS.items():
+        match = pattern.search(text)
+        if match:
+            return source, match.group(0)
+    if event.get("isOnlineMeeting") and join:
+        return "teams", join
+    return None
+
+
+def source_of_join_url(join_url: str) -> str:
+    url = (join_url or "").lower()
+    if "meet.google.com" in url:
+        return "google"
+    if "zoom.us" in url:
+        return "zoom"
+    return "teams"
+
+
+def source_filter(query, source: str | None):
+    """Restrict a MeetingRecord query to one source (None/'' = all sources)."""
+    patterns = SOURCE_LIKE.get(source or "")
+    if not patterns:
+        return query
+    return query.filter(or_(*[MeetingRecord.join_url.like(p) for p in patterns]))
 
 
 # ── Lookup helpers (shared with routes) ─────────────────────────────────────
@@ -106,6 +161,31 @@ def candidate_user_ids(app_client, meeting: dict, signed_in_email: str = "",
     return ids
 
 
+OCCURRENCE_BEFORE = timedelta(hours=1)
+OCCURRENCE_AFTER = timedelta(hours=4)
+
+
+def for_occurrence(items: list[dict] | None, meeting: dict) -> list[dict]:
+    """
+    Transcripts/recordings (Graph items with createdDateTime) that belong to THIS calendar
+    occurrence, newest first. A recurring Teams meeting shares one onlineMeeting across the
+    whole series, so its transcript and recording lists contain every week's items — taking
+    the first one would attach another week's transcript to this meeting.
+    """
+    if not items:
+        return []
+    start = _parse_graph_dt((meeting.get("start") or {}).get("dateTime", ""))
+    if not start:
+        return list(items)
+    end = _parse_graph_dt((meeting.get("end") or {}).get("dateTime", "")) or start + timedelta(hours=1)
+    low, high = start - OCCURRENCE_BEFORE, end + OCCURRENCE_AFTER
+    matched = [
+        item for item in items
+        if (created := _parse_graph_dt(item.get("createdDateTime", ""))) and low <= created <= high
+    ]
+    return sorted(matched, key=lambda i: i.get("createdDateTime", ""), reverse=True)
+
+
 def lookup_meeting_media(app_client, meeting: dict, user_ids: list[str]) -> dict:
     """
     Resolve the onlineMeeting via the first user ID that owns it, then report whether it has
@@ -125,13 +205,16 @@ def lookup_meeting_media(app_client, meeting: dict, user_ids: list[str]) -> dict
                 continue
             result["user_id"] = uid
             result["online_meeting_id"] = online_meeting["id"]
-            result["has_transcript"] = bool(
-                app_client.list_transcripts(online_meeting["id"], user_id=uid)
+            transcripts = for_occurrence(
+                app_client.list_transcripts(online_meeting["id"], user_id=uid), meeting
             )
-            recs = app_client.list_meeting_recordings(online_meeting["id"], uid)
-            result["recording_api_ok"] = recs is not None
+            result["has_transcript"] = bool(transcripts)
+            result["transcript_id"] = transcripts[0]["id"] if transcripts else None
+            raw_recs = app_client.list_meeting_recordings(online_meeting["id"], uid)
+            result["recording_api_ok"] = raw_recs is not None
+            recs = for_occurrence(raw_recs, meeting)
             if recs:
-                newest = max(recs, key=lambda r: r.get("createdDateTime", ""))
+                newest = recs[0]
                 result["recording"] = {
                     "kind": "api",
                     "user_id": uid,
@@ -171,6 +254,7 @@ def record_to_meeting(rec: MeetingRecord) -> dict:
         "organizer": {"emailAddress": {"name": rec.organizer_name, "address": rec.organizer_email}},
         "onlineMeeting": {"joinUrl": rec.join_url},
         "external_attendees": external,
+        "source": source_of_join_url(rec.join_url),
         "status_known": rec.has_transcript is not None,
         "has_transcript": bool(rec.has_transcript),
         "has_recording": bool(rec.has_recording),
@@ -230,10 +314,18 @@ def _upsert_window(owner_email: str, meetings: list[dict], start: datetime, end:
             "join_url": (m.get("onlineMeeting") or {}).get("joinUrl", "") or "",
             "external_attendees_json": json.dumps(m.get("external_attendees", [])),
         }
+        # Google Meet / Zoom invites: no Teams transcript/recording to look up
+        not_teams = source_of_join_url(values["join_url"]) != "teams"
+        fixed_status = {
+            "has_transcript": False, "has_recording": False, "status_checked_at": now,
+            "media_json": json.dumps({"source": source_of_join_url(values["join_url"])}),
+        } if not_teams else {}
+
         rec = existing.get(m["id"]) or get_record(owner_email, m["id"])
         if rec is None:
             db.session.add(MeetingRecord(owner_email=owner_email, event_id=m["id"],
-                                         first_seen_at=now, updated_at=now, **values))
+                                         first_seen_at=now, updated_at=now,
+                                         **values, **fixed_status))
             added += 1
             continue
         changed = {k: v for k, v in values.items() if getattr(rec, k) != v}
@@ -241,6 +333,8 @@ def _upsert_window(owner_email: str, meetings: list[dict], start: datetime, end:
             if "join_url" in changed:  # a different meeting behind the event: re-check status
                 rec.has_transcript = rec.has_recording = None
                 rec.media_json = rec.status_checked_at = None
+                for k, v in fixed_status.items():
+                    setattr(rec, k, v)
             for k, v in changed.items():
                 setattr(rec, k, v)
             rec.updated_at = now
@@ -249,19 +343,28 @@ def _upsert_window(owner_email: str, meetings: list[dict], start: datetime, end:
     removed = 0
     for event_id, rec in existing.items():
         if event_id not in seen:
-            db.session.delete(rec)
-            removed += 1
+            # Keep meetings someone uploaded a video/transcript for, even if they left the calendar
+            if MeetingUpload.query.filter_by(meeting_record_id=rec.id).first() is None:
+                db.session.delete(rec)
+                removed += 1
     db.session.commit()
     return {"added": added, "updated": updated, "removed": removed}
 
 
 def sync_calendar_window(app_client, owner_email: str, user_id: str,
                          start: datetime, end: datetime) -> dict:
-    """Fetch [start, end] of one user's calendar and upsert its customer meetings."""
+    """Fetch [start, end] of one user's calendar and upsert its customer meetings
+    (Teams online meetings plus Google Meet / Zoom invites found by their link)."""
     events = app_client.list_user_calendar_events(
-        user_id, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        user_id, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), online_only=False
     )
-    meetings = filter_customer_meetings(events, Config.ORG_DOMAIN)
+    online = []
+    for event in events:
+        classified = classify_event(event)
+        if classified:
+            event["onlineMeeting"] = {"joinUrl": classified[1]}
+            online.append(event)
+    meetings = filter_customer_meetings(online, Config.ORG_DOMAIN)
     day_start = datetime(start.year, start.month, start.day)
     day_end = datetime(end.year, end.month, end.day, 23, 59, 59)
     return _upsert_window(owner_email, meetings, day_start, day_end)
@@ -273,8 +376,9 @@ def due_for_media_check(owner_email: str, limit: int) -> list[MeetingRecord]:
     """Unchecked meetings, plus recent ones whose transcript/recording may have appeared."""
     now = datetime.utcnow()
     recent = now - timedelta(days=RECHECK_RECENT_DAYS)
+    teams_only = source_filter(MeetingRecord.query, "teams")
     return (
-        MeetingRecord.query.filter(
+        teams_only.filter(
             MeetingRecord.owner_email == owner_email,
             MeetingRecord.start_utc <= now,
             or_(
@@ -397,6 +501,10 @@ def sync_user(owner_email: str, *, min_age: timedelta = SYNC_INTERVAL,
 
         now = datetime.utcnow()
         recent_start = now - timedelta(days=RECENT_WINDOW_DAYS - 1)
+        if row.last_synced_at and row.last_synced_at - timedelta(days=1) < recent_start:
+            recent_start = row.last_synced_at - timedelta(days=1)  # catch up after downtime
+        if not BACKFILL_ENABLED and row.synced_from and recent_start < row.synced_from:
+            recent_start = row.synced_from  # never before the first sync window
         for k, v in sync_calendar_window(app_client, owner_email, user_id, recent_start, now).items():
             summary[k] += v
 
@@ -404,7 +512,7 @@ def sync_user(owner_email: str, *, min_age: timedelta = SYNC_INTERVAL,
         if row.synced_from is None:
             row.synced_from = datetime(recent_start.year, recent_start.month, recent_start.day)
         oldest = now - timedelta(days=BACKFILL_DAYS)
-        if backfill and row.synced_from > oldest:
+        if BACKFILL_ENABLED and backfill and row.synced_from > oldest:
             chunk_end = row.synced_from - timedelta(days=1)
             chunk_start = max(chunk_end - timedelta(days=BACKFILL_CHUNK_DAYS - 1), oldest)
             for k, v in sync_calendar_window(app_client, owner_email, user_id, chunk_start, chunk_end).items():
@@ -412,8 +520,11 @@ def sync_user(owner_email: str, *, min_age: timedelta = SYNC_INTERVAL,
             row.synced_from = datetime(chunk_start.year, chunk_start.month, chunk_start.day)
 
         if recheck_recent:
-            # Manual sync: re-check the last two days right away (transcripts arrive late)
-            MeetingRecord.query.filter(
+            # Manual sync: re-check the last two days right away (transcripts and recordings
+            # arrive late). Drop cached OneDrive search results so a just-finished recording
+            # is seen now rather than after the cache expires.
+            clear_recording_search_cache()
+            source_filter(MeetingRecord.query, "teams").filter(
                 MeetingRecord.owner_email == owner_email,
                 MeetingRecord.start_utc >= now - timedelta(days=2),
                 or_(MeetingRecord.has_transcript.is_(False), MeetingRecord.has_recording.is_(False)),
@@ -444,6 +555,8 @@ def ensure_backfill(owner_email: str, until: datetime) -> bool:
     Synchronously fill history back to `until` (used when the user scrolls or filters past
     what the background backfill has reached). Returns True if anything was fetched.
     """
+    if not BACKFILL_ENABLED:
+        return False  # history before the first sync window is intentionally not fetched
     owner_email = owner_email.lower()
     row = _sync_row(owner_email)
     if row.synced_from is not None and row.synced_from <= until:
@@ -465,14 +578,44 @@ def ensure_backfill(owner_email: str, until: datetime) -> bool:
 
 # ── Background loop ─────────────────────────────────────────────────────────
 
-def _active_users() -> list[str]:
-    """Org users who signed in recently (others, e.g. sample data, are never synced)."""
-    since = datetime.utcnow() - timedelta(days=ACTIVE_USER_DAYS)
+def enrolled_users() -> list[str]:
+    """
+    Users whose meetings are synced: org accounts that signed in (or opened the Teams page)
+    since meeting sync was enabled — each has a CalendarSync row. Users who only signed in
+    before that are never synced in the background until they sign in again.
+    ACTIVE_USER_DAYS > 0 additionally skips enrolled users who haven't signed in that recently.
+    """
     suffix = f"@{Config.ORG_DOMAIN}".lower()
-    return [
-        u.email.lower() for u in User.query.filter(User.last_login >= since).all()
-        if u.email.lower().endswith(suffix)
-    ]
+    emails = [row.owner_email for row in CalendarSync.query.all() if row.owner_email.endswith(suffix)]
+    if ACTIVE_USER_DAYS > 0 and emails:
+        since = datetime.utcnow() - timedelta(days=ACTIVE_USER_DAYS)
+        recent = {u.email.lower() for u in User.query.filter(User.last_login >= since).all()}
+        emails = [e for e in emails if e in recent]
+    return emails
+
+
+def is_enrolled(owner_email: str) -> bool:
+    return get_sync_state((owner_email or "").lower()) is not None
+
+
+def start_initial_sync(app, owner_email: str) -> None:
+    """
+    Called at sign-in: enrol the user and fetch their latest window in the background, so
+    the Teams page is ready when they open it (never blocks the login redirect).
+    """
+    owner_email = (owner_email or "").lower()
+    if not owner_email.endswith(f"@{Config.ORG_DOMAIN}".lower()):
+        return
+
+    def run():
+        try:
+            with app.app_context():
+                sync_user(owner_email, min_age=MANUAL_SYNC_COOLDOWN, media_limit=0, backfill=False)
+                db.session.remove()
+        except Exception:
+            logger.exception("Initial sync at sign-in failed for %s", owner_email)
+
+    threading.Thread(target=run, name="meeting-sync-login", daemon=True).start()
 
 
 def _loop(app) -> None:
@@ -480,12 +623,48 @@ def _loop(app) -> None:
     while True:
         try:
             with app.app_context():
-                for email in _active_users():
+                for email in enrolled_users():
                     sync_user(email)
                 db.session.remove()
         except Exception:
             logger.exception("Background sync tick failed")
         time.sleep(LOOP_TICK_SECONDS)
+
+
+_sync_all_lock = threading.Lock()
+_sync_all_running = False
+
+
+def start_sync_all(app) -> tuple[bool, int]:
+    """
+    Admin "Sync all users": sync every enrolled user in a background thread, one at a time
+    (each still honours the per-user lock + 60 s cooldown). Returns (started, user_count);
+    started is False if a sync-all is already running in this process.
+    """
+    global _sync_all_running
+    with _sync_all_lock:
+        if _sync_all_running:
+            return False, 0
+        _sync_all_running = True
+    with app.app_context():
+        emails = enrolled_users()
+
+    def run():
+        global _sync_all_running
+        try:
+            with app.app_context():
+                for email in emails:
+                    try:
+                        sync_user(email, min_age=MANUAL_SYNC_COOLDOWN)
+                    except Exception:
+                        logger.exception("Sync-all failed for %s", email)
+                db.session.remove()
+        finally:
+            _sync_all_running = False
+            logger.info("Sync of all users finished (%d users)", len(emails))
+
+    threading.Thread(target=run, name="meeting-sync-all", daemon=True).start()
+    return True, len(emails)
 
 
 _started = False

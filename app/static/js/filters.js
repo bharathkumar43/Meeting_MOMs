@@ -17,7 +17,8 @@
         function apply() {
             // Re-read rows each time: the "All" view appends older meetings later
             var rows = table ? Array.prototype.slice.call(table.querySelectorAll('tbody tr[data-search]')) : [];
-            if (totalEl) { totalEl.textContent = rows.length; }
+            // A paged list shows the server's full total (data-fixed); otherwise count rows
+            if (totalEl && !totalEl.hasAttribute('data-fixed')) { totalEl.textContent = rows.length; }
             var terms = (input && input.value ? input.value : '')
                 .toLowerCase()
                 .split(',')
@@ -70,6 +71,11 @@
             syncDates();
         }
 
+        // Dropdowns marked data-autosubmit (e.g. meeting source) reload the list on change
+        root.querySelectorAll('[data-autosubmit]').forEach(function (el) {
+            el.addEventListener('change', function () { root.submit(); });
+        });
+
         root.addEventListener('submit', function (e) {
             if (!syncDates()) {
                 e.preventDefault();
@@ -102,7 +108,7 @@
     // own behaviour, so Ctrl/middle-click on the subject still opens a new tab).
     document.addEventListener('click', function (e) {
         var row = e.target.closest('tr[data-href]');
-        if (!row || e.target.closest('a, button, input, label, [data-bs-toggle]')) { return; }
+        if (!row || e.target.closest('a, button, input, label, select, option, [data-bs-toggle]')) { return; }
         if (window.getSelection && String(window.getSelection())) { return; }  // selecting text
         window.location.href = row.dataset.href;
     });

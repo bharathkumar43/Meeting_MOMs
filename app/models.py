@@ -106,3 +106,47 @@ class CalendarSync(db.Model):
 
     def __repr__(self):
         return f"<CalendarSync {self.owner_email} at {self.last_synced_at}>"
+
+
+class MeetingUpload(db.Model):
+    """
+    A video or transcript uploaded by hand for a stored meeting (used when Teams has none).
+    Video bytes live on disk under Config.UPLOAD_DIR; transcript text is kept here.
+    """
+    __tablename__ = "meeting_uploads"
+
+    id = db.Column(db.Integer, primary_key=True)
+    meeting_record_id = db.Column(
+        db.Integer, db.ForeignKey("meeting_records.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    kind = db.Column(db.String(20), nullable=False)  # "video" | "transcript"
+    original_name = db.Column(db.String(255), nullable=False, default="")
+    stored_name = db.Column(db.String(255), nullable=True)  # video file name in UPLOAD_DIR
+    content_type = db.Column(db.String(100), nullable=False, default="")
+    size_bytes = db.Column(db.BigInteger, nullable=False, default=0)
+    transcript_text = db.Column(db.Text, nullable=True)   # raw uploaded transcript
+    transcript_format = db.Column(db.String(10), nullable=True)  # "vtt" | "txt" | "docx"
+    uploaded_by = db.Column(db.String(255), nullable=False, default="")
+    uploaded_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<MeetingUpload {self.kind} for record {self.meeting_record_id}>"
+
+
+class UserRole(db.Model):
+    """
+    Role and reporting line set by an admin: 'admin' | 'manager' | 'employee', plus the
+    manager an employee reports to. Emails in Config.ADMIN_EMAILS are always admins;
+    Config.MANAGER_EMAILS is only the default until an admin sets a role here.
+    """
+    __tablename__ = "user_roles"
+
+    email = db.Column(db.String(255), primary_key=True)
+    role = db.Column(db.String(20), nullable=False, default="employee")
+    manager_email = db.Column(db.String(255), nullable=True, index=True)
+    updated_by = db.Column(db.String(255), nullable=False, default="")
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<UserRole {self.email}: {self.role} -> {self.manager_email}>"

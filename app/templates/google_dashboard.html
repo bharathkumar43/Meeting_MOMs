@@ -44,7 +44,7 @@
                         {% if meeting.start.dateTime %}
                         <div class="date-main">{{ meeting.start.dateTime | nice_date }}</div>
                         <div class="date-sub">
-                            {{ meeting.start.dateTime[11:16] }}{% if meeting.end.dateTime %} &ndash; {{ meeting.end.dateTime[11:16] }}{% endif %} UTC
+                            {{ meeting.start.dateTime | hm }}{% if meeting.end.dateTime %} &ndash; {{ meeting.end.dateTime | hm }}{% endif %} {{ tz_name }}
                         </div>
                         {% else %}
                         <span class="text-muted">&mdash;</span>

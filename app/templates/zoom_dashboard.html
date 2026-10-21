@@ -10,13 +10,6 @@
             Zoom Meetings
         </h1>
     </div>
-    {% if meetings %}
-    {% set with_tx = meetings | selectattr('has_transcript', 'equalto', true) | list | length %}
-    <div class="page-actions">
-        <span class="status-pill status-ok">{{ with_tx }} with transcript</span>
-        <span class="status-pill status-manual">{{ meetings | length - with_tx }} manual</span>
-    </div>
-    {% endif %}
 </div>
 
 {% if not zoom_configured %}
@@ -84,7 +77,7 @@
                     <td>
                         {% if meeting.start.dateTime %}
                         <div class="date-main">{{ meeting.start.dateTime | nice_date }}</div>
-                        <div class="date-sub">{{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC</div>
+                        <div class="date-sub">{{ meeting.start.dateTime | hm }} &ndash; {{ meeting.end.dateTime | hm }} {{ tz_name }}</div>
                         {% else %}
                         <span class="text-muted">&mdash;</span>
                         {% endif %}

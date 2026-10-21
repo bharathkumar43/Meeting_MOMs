@@ -4,33 +4,37 @@
 
 {% block content %}
 {% set total = meetings | length %}
-{% set with_tx = meetings | selectattr('has_transcript', 'equalto', true) | list | length %}
-{% set ns = namespace(sent=0) %}
-{% for meeting in meetings %}
-    {% if (meeting.subject ~ '|' ~ meeting.start.dateTime[:10]) in sent_keys %}{% set ns.sent = ns.sent + 1 %}{% endif %}
-{% endfor %}
 
-<nav aria-label="breadcrumb">
-    <ol class="breadcrumb">
-        <li class="breadcrumb-item"><a href="{{ url_for('main.admin_dashboard') }}">Admin</a></li>
-        <li class="breadcrumb-item active">{{ user_display_name }}</li>
-    </ol>
-</nav>
-
-<div class="page-header">
-    <div class="d-flex align-items-center gap-3">
+<div class="meeting-head">
+    <a href="{{ people_home }}" class="btn-back" title="Back" aria-label="Back">
+        <i class="bi bi-arrow-left"></i>
+    </a>
+    <div class="d-flex align-items-center gap-3 min-w-0 flex-grow-1">
         <span class="avatar avatar-lg">{{ (user_display_name or user_email)[:1] | upper }}</span>
-        <div>
+        <div class="min-w-0">
             <h1 class="page-title">{{ user_display_name }}</h1>
-            <p class="page-subtitle mb-0">{{ user_email }}</p>
+            <div class="meeting-meta"><span><i class="bi bi-envelope"></i> {{ user_email }}</span></div>
         </div>
     </div>
-    <div class="page-actions">
-        <a href="{{ url_for('main.admin_dashboard') }}" class="btn btn-light-outline">
-            <i class="bi bi-arrow-left"></i> Back to admin
-        </a>
+    <div class="d-flex align-items-center gap-2 flex-shrink-0">
+        <span class="sync-meta text-muted small">Synced {{ last_synced_at | time_ago }}</span>
+        <button type="button" class="btn btn-sm btn-light-outline" id="syncBtn"
+                data-sync-url="{{ url_for('main.admin_user_meetings_sync', user_email=user_email) }}">
+            <i class="bi bi-arrow-repeat"></i> <span>Sync</span>
+        </button>
     </div>
 </div>
+
+{% if not_enrolled %}
+<div class="alert alert-info d-flex gap-2">
+    <i class="bi bi-info-circle-fill"></i>
+    <div>
+        <strong>Not synced yet.</strong> This user hasn't signed in since meeting sync was enabled,
+        so their meetings aren't stored. They'll sync automatically at their next sign-in &mdash;
+        or click <strong>Sync</strong> to pull their last 30 days now.
+    </div>
+</div>
+{% endif %}
 
 {% if error %}
 <div class="alert alert-warning d-flex gap-2">
@@ -40,94 +44,73 @@
 {% endif %}
 
 <div class="row g-3 mb-4">
-    <div class="col-sm-6 col-xl-3">
+    <div class="col-sm-4">
         <div class="card kpi-card">
             <span class="kpi-icon kpi-blue"><i class="bi bi-people"></i></span>
-            <div><div class="kpi-label">Customer meetings</div><div class="kpi-value">{{ total }}</div></div>
+            <div>
+                <div class="kpi-label">Customer meetings</div><div class="kpi-value">{{ kpi.total }}</div>
+                <div class="kpi-meta">{% for key, label in sources.items() %}{{ label }} {{ kpi.by_source[key] }}{{ " · " if not loop.last }}{% endfor %}</div>
+            </div>
         </div>
     </div>
-    <div class="col-sm-6 col-xl-3">
+    <div class="col-sm-4">
         <div class="card kpi-card">
-            <span class="kpi-icon kpi-green"><i class="bi bi-file-text"></i></span>
-            <div><div class="kpi-label">With transcript</div><div class="kpi-value">{{ with_tx }}</div></div>
+            <span class="kpi-icon kpi-green"><i class="bi bi-send-check"></i></span>
+            <div><div class="kpi-label">MOMs sent</div><div class="kpi-value">{{ kpi.sent }}</div></div>
         </div>
     </div>
-    <div class="col-sm-6 col-xl-3">
-        <div class="card kpi-card">
-            <span class="kpi-icon kpi-violet"><i class="bi bi-send-check"></i></span>
-            <div><div class="kpi-label">MOMs sent</div><div class="kpi-value">{{ ns.sent }}</div></div>
-        </div>
-    </div>
-    <div class="col-sm-6 col-xl-3">
+    <div class="col-sm-4">
         <div class="card kpi-card">
             <span class="kpi-icon kpi-amber"><i class="bi bi-hourglass-split"></i></span>
-            <div><div class="kpi-label">MOMs pending</div><div class="kpi-value">{{ total - ns.sent }}</div></div>
+            <div><div class="kpi-label">MOMs pending</div><div class="kpi-value">{{ kpi.pending }}</div></div>
         </div>
     </div>
 </div>
 
-{{ ui.filter_bar('main.admin_user_meetings', start_date, end_date, request.args.get('keyword', ''),
-                 url_args={'user_email': user_email}) }}
+{{ ui.filter_bar('main.admin_user_meetings', start_date, end_date, keyword,
+                 url_args={'user_email': user_email, 'source': source or None},
+                 include_all=True, default_preset='All', sources=sources, source=source) }}
 
-{{ ui.results_meta(total, extra=(start_date | nice_date) ~ ' – ' ~ (end_date | nice_date)) }}
+{{ ui.results_meta(total, grand_total=list_total) }}
 
 <div class="card">
     {% if meetings %}
     <div class="table-responsive">
-        <table class="table table-hover align-middle" id="meetingsTable">
+        <table class="table table-hover align-middle" id="meetingsTable"
+               data-status-url="{{ url_for('main.admin_user_meetings_status', user_email=user_email) }}">
             <thead>
                 <tr>
                     <th>Meeting</th>
                     <th>Date &amp; time</th>
                     <th>External attendees</th>
                     <th>Transcript</th>
+                    <th>Video</th>
                     <th>MOM</th>
                 </tr>
             </thead>
             <tbody>
-                {% for meeting in meetings %}
-                {% set meeting_key = meeting.subject ~ '|' ~ meeting.start.dateTime[:10] %}
-                <tr data-search="{{ ui.search_text(meeting) }}"
-                    data-status="{{ 'transcript' if meeting.has_transcript else 'manual' }}">
-                    <td>
-                        <div class="meeting-cell">
-                            <span class="source-icon source-teams"><i class="bi bi-microsoft-teams"></i></span>
-                            <div>
-                                <div class="meeting-subject">{{ meeting.subject }}</div>
-                                <div class="meeting-sub">Organizer: {{ meeting.organizer.emailAddress.name or meeting.organizer.emailAddress.address }}</div>
-                            </div>
-                        </div>
-                    </td>
-                    <td>
-                        <div class="date-main">{{ meeting.start.dateTime | nice_date }}</div>
-                        <div class="date-sub">{{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC</div>
-                    </td>
-                    <td>{{ ui.attendee_chips(meeting.get('external_attendees', [])) }}</td>
-                    <td>
-                        {% if meeting.has_transcript %}
-                        <span class="status-pill status-ok">Available</span>
-                        {% else %}
-                        <span class="status-pill status-manual">Manual</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if meeting_key in sent_keys %}
-                        <span class="status-pill status-sent">Sent</span>
-                        {% else %}
-                        <span class="status-pill status-pending">Pending</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-                {{ ui.no_match_row(5) }}
+                {% include "_admin_rows.html" %}
+                {{ ui.no_match_row(6) }}
             </tbody>
         </table>
     </div>
+    {% if next_offset is not none %}
+    <div class="load-older"
+         data-load-older="{{ url_for('main.admin_user_meetings_older', user_email=user_email, source=source or None, keyword=keyword or None) }}"
+         data-offset="{{ next_offset }}">
+        <button type="button" class="btn btn-light-outline btn-sm">
+            <i class="bi bi-clock-history"></i> Load older meetings
+        </button>
+        <span class="load-older-status text-muted small d-none">
+            <span class="spinner-border spinner-border-sm"></span> Loading older meetings…
+        </span>
+    </div>
+    {% endif %}
     {% else %}
     <div class="empty-state">
         <div class="empty-icon"><i class="bi bi-calendar-x"></i></div>
-        <h6>No customer meetings in this range</h6>
-        <p class="small mb-0">Try a wider date range.</p>
+        <h6>No customer meetings found</h6>
+        <p class="small mb-0">Try a wider date range in Filters.</p>
     </div>
     {% endif %}
 </div>
@@ -135,4 +118,5 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/filters.js') }}"></script>
+<script src="{{ url_for('static', filename='js/teams_status.js') }}"></script>
 {% endblock %}

@@ -34,12 +34,14 @@ services:
         condition: service_healthy
     volumes:
       - mom_session:/app/flask_session
+      - mom_uploads:/app/uploads
     networks:
       - mom_network
 
 volumes:
   mom_pgdata:
   mom_session:
+  mom_uploads:
 
 networks:
   mom_network:

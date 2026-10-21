@@ -10,8 +10,8 @@
 <form method="POST" action="{{ url_for('main.mom_builder') }}">
     <input type="hidden" name="event_id" value="{{ meeting.id }}">
     <input type="hidden" name="meeting_subject" value="{{ meeting.subject }}">
-    <input type="hidden" name="meeting_date" value="{{ meeting.start.dateTime[:10] }}">
-    <input type="hidden" name="meeting_time" value="{{ meeting.start.dateTime[11:16] }} - {{ meeting.end.dateTime[11:16] }} UTC">
+    <input type="hidden" name="meeting_date" value="{{ meeting.start.dateTime | local_date }}">
+    <input type="hidden" name="meeting_time" value="{{ meeting.start.dateTime | hm }} - {{ meeting.end.dateTime | hm }} {{ tz_name }}">
     <input type="hidden" name="attendees_json" value="{{ attendees_json }}">
 
     <div class="meeting-head">
@@ -22,29 +22,78 @@
             <h1 class="page-title">{{ meeting.subject }}</h1>
             <div class="meeting-meta">
                 <span><i class="bi bi-calendar3"></i> {{ meeting.start.dateTime | nice_date }}</span>
-                <span><i class="bi bi-clock"></i> {{ meeting.start.dateTime[11:16] }} &ndash; {{ meeting.end.dateTime[11:16] }} UTC</span>
+                <span><i class="bi bi-clock"></i> {{ meeting.start.dateTime | hm }} &ndash; {{ meeting.end.dateTime | hm }} {{ tz_name }}</span>
                 {% if org.get('name') or org.get('address') %}
                 <span><i class="bi bi-person"></i> {{ org.get('name') or org.get('address') }}</span>
                 {% endif %}
             </div>
         </div>
+        {% if not read_only %}
         <button type="submit" class="btn btn-primary btn-create-mom">
             <i class="bi bi-stars"></i> Create MOM
         </button>
+        {% endif %}
     </div>
+
+    {% if source_note %}
+    <div class="alert alert-info d-flex gap-2">
+        <i class="bi bi-info-circle-fill"></i>
+        <div>{{ source_note }}</div>
+    </div>
+    {% endif %}
+
+    {% set up = uploads or {} %}
+    {% if can_upload %}
+    <div class="d-none" id="uploadCtx"
+         data-video-url="{{ url_for('main.upload_meeting_video') }}"
+         data-transcript-url="{{ url_for('main.upload_meeting_transcript') }}"
+         data-event-id="{{ meeting.id }}" data-owner="{{ upload_owner }}"
+         data-max-bytes="{{ config.VIDEO_UPLOAD_MAX_BYTES }}"></div>
+    <input type="file" id="videoFile" class="d-none"
+           accept=".mp4,.m4v,.webm,.mov,video/mp4,video/webm,video/quicktime">
+    {% endif %}
 
     <!-- Recording -->
     {% if recording %}
     <div class="card mb-4" id="recordingCard">
         <div class="card-header d-flex justify-content-between align-items-center gap-2">
-            <span class="card-title-text"><i class="bi bi-camera-reels text-primary"></i> Recording</span>
-            <a href="{{ recording.download_url }}" class="btn btn-sm btn-light-outline" download>
-                <i class="bi bi-download"></i> Download
-            </a>
+            <span class="card-title-text">
+                <i class="bi bi-camera-reels text-primary"></i> Recording
+                {% if up.video %}
+                <span class="upload-meta">Uploaded by {{ up.video.uploaded_by }} &middot; {{ up.video.uploaded_at | local_dt('%d %b, %H:%M') }} {{ tz_name }}</span>
+                {% endif %}
+            </span>
+            <div class="d-flex gap-2">
+                {% if up.video and can_upload %}
+                <label class="btn btn-sm btn-light-outline mb-0" for="videoFile"><i class="bi bi-arrow-repeat"></i> Replace</label>
+                {% endif %}
+                <a href="{{ recording.download_url }}" class="btn btn-sm btn-light-outline" download>
+                    <i class="bi bi-download"></i> Download
+                </a>
+            </div>
         </div>
         <video id="player" class="recording-player" controls preload="metadata" src="{{ recording.src }}">
             Your browser can't play this video.
         </video>
+        <div class="upload-status small px-3 pb-2" id="videoStatus"></div>
+    </div>
+    {% elif can_upload %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <span class="card-title-text"><i class="bi bi-camera-reels text-primary"></i> Recording</span>
+        </div>
+        <div class="card-body">
+            <label class="dropzone" id="videoDrop" for="videoFile">
+                <span class="dropzone-icon"><i class="bi bi-cloud-arrow-up"></i></span>
+                <span class="fw-semibold">No recording found for this meeting</span>
+                <span class="text-muted small">Drag &amp; drop a video here, or <span class="dropzone-link">browse</span></span>
+                <span class="text-muted small">MP4, WebM or MOV &middot; up to {{ config.VIDEO_UPLOAD_MAX_BYTES // 1048576 }} MB</span>
+                <span class="progress progress-thin dropzone-progress d-none" id="videoProgressWrap">
+                    <span class="progress-bar" id="videoProgress"></span>
+                </span>
+                <span class="upload-status small" id="videoStatus"></span>
+            </label>
+        </div>
     </div>
     {% endif %}
 
@@ -55,16 +104,23 @@
                 <i class="bi bi-chat-square-text text-primary"></i> Transcript
                 {% if lines %}<span class="badge rounded-pill bg-light text-muted border fw-normal">{{ lines | length }} lines</span>{% endif %}
                 <span class="status-pill status-sent d-none" id="editBadge">Edited</span>
+                {% if up.transcript %}
+                <span class="upload-meta">Uploaded by {{ up.transcript.uploaded_by }} &middot; {{ up.transcript.uploaded_at | local_dt('%d %b, %H:%M') }} {{ tz_name }}</span>
+                {% endif %}
             </span>
             <div class="d-flex gap-2">
-                {% if lines %}
+                {% if not read_only and lines %}
                 <button type="button" class="btn btn-sm btn-light-outline" id="editToggle">
                     <i class="bi bi-pencil"></i> Edit
                 </button>
                 {% endif %}
-                <label class="btn btn-sm btn-light-outline mb-0" for="transcriptFile" title="Upload .txt, .vtt or .docx (max 10 MB)">
+                {% if not read_only or can_upload %}
+                <label class="btn btn-sm btn-light-outline mb-0" for="transcriptFile"
+                       title="Upload .vtt (keeps timestamps), .txt or .docx (max 10 MB)">
                     <i class="bi bi-upload"></i> Upload
                 </label>
+                {% endif %}
+                <span class="upload-status small align-self-center" id="txSaveStatus"></span>
                 <input type="file" class="d-none" id="transcriptFile"
                        accept=".txt,.vtt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
             </div>
@@ -91,8 +147,8 @@
 
         <div class="card-body {{ 'd-none' if lines }}" id="editorWrap">
             <textarea class="form-control font-monospace transcript-editor" name="transcript"
-                      id="transcriptArea"
-                      placeholder="No transcript found for this meeting. Paste notes or a transcript here, or use Upload.">{{ transcript_text }}</textarea>
+                      id="transcriptArea" {{ 'readonly' if read_only }}
+                      placeholder="{{ 'No transcript is available for this meeting.' if read_only else 'No transcript found for this meeting. Paste notes or a transcript here, or use Upload.' }}">{{ transcript_text }}</textarea>
             <div id="uploadStatus" class="text-muted small mt-2"></div>
             <div id="uploadError" class="alert alert-danger mt-2 mb-0 d-none py-2 small"></div>
         </div>
@@ -127,6 +183,108 @@
     area.addEventListener('input', function () { badge.classList.remove('d-none'); });
 
     // Upload → replaces the transcript text and switches to the editor
+    // ── Saved uploads (stored meetings): transcript + video are kept with the meeting ──
+    var ctx = document.getElementById('uploadCtx');
+    function ctxForm(field, file) {
+        var fd = new FormData();
+        fd.append(field, file);
+        fd.append('event_id', ctx.dataset.eventId);
+        fd.append('owner', ctx.dataset.owner);
+        return fd;
+    }
+    function setStatus(el, text, isError) {
+        if (!el) { return; }
+        el.textContent = text;
+        el.classList.toggle('text-danger', !!isError);
+    }
+
+    if (ctx) {
+        // Registered first: when the meeting is stored, save the transcript instead of
+        // only filling the editor
+        document.getElementById('transcriptFile').addEventListener('change', async function (e) {
+            e.stopImmediatePropagation();
+            var file = e.target.files && e.target.files[0];
+            var st = document.getElementById('txSaveStatus');
+            e.target.value = '';
+            if (!file) { return; }
+            if (!/\.(txt|vtt|docx)$/i.test(file.name)) { setStatus(st, 'Use a .vtt, .txt or .docx file.', true); return; }
+            setStatus(st, 'Saving transcript…');
+            try {
+                var res = await fetch(ctx.dataset.transcriptUrl, {
+                    method: 'POST', body: ctxForm('file', file), credentials: 'same-origin',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                });
+                var body = await res.json().catch(function () { return {}; });
+                if (res.ok && body.status === 'ok') { window.location.reload(); return; }
+                setStatus(st, body.message || 'Upload failed.', true);
+            } catch (err) {
+                setStatus(st, 'Upload failed. Check your connection.', true);
+            }
+        });
+
+        var videoInput = document.getElementById('videoFile');
+        var drop = document.getElementById('videoDrop');
+        var vStatus = document.getElementById('videoStatus');
+        var bar = document.getElementById('videoProgress');
+        var barWrap = document.getElementById('videoProgressWrap');
+        var maxBytes = parseInt(ctx.dataset.maxBytes, 10) || 0;
+
+        function uploadVideo(file) {
+            if (!file) { return; }
+            if (!/\.(mp4|m4v|webm|mov)$/i.test(file.name)) {
+                setStatus(vStatus, 'Please choose an .mp4, .webm or .mov video.', true); return;
+            }
+            if (maxBytes && file.size > maxBytes) {
+                setStatus(vStatus, 'Video is too large (max ' + Math.round(maxBytes / 1048576) + ' MB).', true); return;
+            }
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', ctx.dataset.videoUrl);
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+            if (barWrap) { barWrap.classList.remove('d-none'); }
+            xhr.upload.addEventListener('progress', function (ev) {
+                if (!ev.lengthComputable) { return; }
+                var pct = Math.round(ev.loaded / ev.total * 100);
+                if (bar) { bar.style.width = pct + '%'; }
+                setStatus(vStatus, 'Uploading… ' + pct + '%');
+            });
+            xhr.addEventListener('load', function () {
+                var body = {};
+                try { body = JSON.parse(xhr.responseText); } catch (err) {}
+                if (xhr.status === 200 && body.status === 'ok') {
+                    setStatus(vStatus, 'Uploaded — loading video…');
+                    window.location.reload();
+                } else {
+                    if (barWrap) { barWrap.classList.add('d-none'); }
+                    setStatus(vStatus, body.message || (xhr.status === 413 ? 'Video is too large.' : 'Upload failed.'), true);
+                }
+            });
+            xhr.addEventListener('error', function () {
+                if (barWrap) { barWrap.classList.add('d-none'); }
+                setStatus(vStatus, 'Upload failed. Check your connection.', true);
+            });
+            setStatus(vStatus, 'Uploading… 0%');
+            xhr.send(ctxForm('video', file));
+        }
+
+        if (videoInput) {
+            videoInput.addEventListener('change', function () {
+                uploadVideo(videoInput.files && videoInput.files[0]);
+                videoInput.value = '';
+            });
+        }
+        if (drop) {
+            ['dragenter', 'dragover'].forEach(function (name) {
+                drop.addEventListener(name, function (e) { e.preventDefault(); drop.classList.add('is-dragover'); });
+            });
+            ['dragleave', 'drop'].forEach(function (name) {
+                drop.addEventListener(name, function (e) { e.preventDefault(); drop.classList.remove('is-dragover'); });
+            });
+            drop.addEventListener('drop', function (e) {
+                uploadVideo(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+            });
+        }
+    }
+
     document.getElementById('transcriptFile').addEventListener('change', async function (e) {
         var file = e.target.files && e.target.files[0];
         uploadError.classList.add('d-none');

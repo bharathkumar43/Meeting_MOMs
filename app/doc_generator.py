@@ -4,13 +4,14 @@ import os
 import platform
 import subprocess
 import tempfile
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
+
+from app.timefmt import TZ_NAME, local_today
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # Pre-rendered 4x PNG of the SVG logo: no native Cairo library needed (Windows has none)
@@ -229,7 +230,7 @@ def generate_mom_document(
     footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = footer_para.add_run(
         "This document is confidential and intended solely for the recipients listed above.\n"
-        f"Generated on {datetime.utcnow().strftime('%B %d, %Y at %I:%M %p')} UTC"
+        f"Generated on {local_today().strftime('%B %d, %Y at %I:%M %p')} {TZ_NAME}"
     )
     run.font.size = Pt(8)
     run.font.color.rgb = RGBColor(150, 150, 150)

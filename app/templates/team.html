@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}My Team - MOM Generator{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">
+            <span class="source-icon kpi-blue"><i class="bi bi-people"></i></span>
+            My Team
+        </h1>
+    </div>
+</div>
+
+{% if team_rows %}
+<div class="mb-3">
+    <input type="text" id="overviewSearch" class="form-control" placeholder="Search by name or email..."
+           aria-label="Search team">
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0" id="overviewTable">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Last login</th>
+                    <th>Meeting sync</th>
+                </tr>
+            </thead>
+            <tbody id="overviewBody">
+                {% for u in team_rows %}
+                {% set em = u.email | lower %}
+                <tr class="overview-row"
+                    data-href="{{ url_for('main.admin_user_meetings', user_email=u.email) }}" tabindex="0"
+                    data-name="{{ u.name | lower }}" data-email="{{ em }}">
+                    <td>
+                        <div class="d-flex align-items-center gap-3">
+                            <span class="avatar">{{ ((u.name or u.email)[:1]) | upper }}</span>
+                            <div class="min-w-0">
+                                <a class="row-link meeting-subject" href="{{ url_for('main.admin_user_meetings', user_email=u.email) }}">{{ u.name or 'Unknown' }}</a>
+                                <div class="text-muted small">{{ u.email }}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>
+                        {% if u.last_login %}
+                        <div class="date-main">{{ u.last_login | local_dt('%a, %d %b %Y') }}</div>
+                        {% set ago = u.last_login | time_ago %}
+                        <div class="date-sub">{{ u.last_login | local_dt('%H:%M') }} {{ tz_name }}{% if ago.endswith('ago') or ago == 'just now' %} &middot; {{ ago }}{% endif %}</div>
+                        {% else %}&mdash;{% endif %}
+                    </td>
+                    <td>
+                        {% set st = sync_states.get(em) %}
+                        {% if st and st.last_synced_at %}
+                        <span class="status-pill status-ok">Synced</span>
+                        <div class="date-sub mt-1">{{ st.last_synced_at | time_ago }}</div>
+                        {% elif st %}
+                        <span class="status-pill status-loading">Syncing…</span>
+                        {% else %}
+                        <span class="status-pill status-manual" title="Hasn't signed in since meeting sync was enabled">Not synced</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="card">
+    <div class="empty-state">
+        <div class="empty-icon"><i class="bi bi-people"></i></div>
+        <h6>No one is assigned to you yet</h6>
+        <p class="small mb-0">An admin assigns employees to managers from the Admin panel.</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/filters.js') }}"></script>
+<script>
+(function () {
+    var search = document.getElementById('overviewSearch');
+    if (!search) { return; }
+    search.addEventListener('input', function () {
+        var q = search.value.toLowerCase();
+        document.querySelectorAll('#overviewBody .overview-row').forEach(function (row) {
+            var hit = !q || (row.dataset.name || '').includes(q) || (row.dataset.email || '').includes(q);
+            row.hidden = !hit;
+        });
+    });
+})();
+</script>
+{% endblock %}

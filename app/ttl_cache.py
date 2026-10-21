@@ -28,6 +28,10 @@ class TTLCache:
     def __contains__(self, key: Any) -> bool:
         return self.get(key, _MISSING) is not _MISSING
 
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+
     def set(self, key: Any, value: Any) -> None:
         with self._lock:
             if len(self._data) >= self._max:

@@ -13,3 +13,6 @@ migrations/
 # Claude Code — personal overrides (never commit)
 CLAUDE.local.md
 .claude/settings.local.json
+
+# Manually uploaded meeting videos (customer data)
+uploads/

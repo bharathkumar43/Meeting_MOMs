@@ -11,6 +11,7 @@ from datetime import datetime
 from app.activity_tracker import get_audit_rows, get_audit_totals
 from app.auth import get_app_token
 from app.graph_client import GraphClient
+from app.timefmt import TZ_NAME, to_local
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def build_audit_html(rows: list[dict], totals: dict, days: int, generated_at_utc: datetime) -> str:
     """HTML body for the audit email."""
-    ts = generated_at_utc.strftime("%Y-%m-%d %H:%M UTC")
+    ts = f"{to_local(generated_at_utc).strftime('%Y-%m-%d %H:%M')} {TZ_NAME}"
     intro = (
         f"<p><strong>Meeting MOM Generator</strong> — rolling <strong>{days}-day</strong> audit "
         f"(users with sign-in during this period).</p>"
@@ -110,7 +111,7 @@ def send_daily_audit_report(force: bool = False) -> tuple[bool, str]:
 
     subject = (
         f"MOM Generator audit ({days}d) — "
-        f"{now.strftime('%Y-%m-%d')} UTC — "
+        f"{to_local(now).strftime('%Y-%m-%d')} {TZ_NAME} — "
         f"{totals['users']} users"
     )
 

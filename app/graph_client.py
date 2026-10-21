@@ -25,6 +25,11 @@ _CALENDAR_MAX_EVENTS = 2000
 _RECORDING_SEARCH_CACHE = TTLCache(ttl_seconds=300)
 
 
+def clear_recording_search_cache() -> None:
+    """Forget cached OneDrive recording searches (used by the manual Sync button)."""
+    _RECORDING_SEARCH_CACHE.clear()
+
+
 def _parse_retry_after(resp):
     """Parse Retry-After header safely. Handles values like '30', '30,120', or missing."""
     raw = resp.headers.get("Retry-After", "5")
@@ -478,22 +483,29 @@ class GraphClient:
         resp.raise_for_status()
         return resp.json()
 
-    def list_user_calendar_events(self, user_id, start_date, end_date):
-        """Fetch calendar events for a specific user (requires app-level token)."""
+    def list_user_calendar_events(self, user_id, start_date, end_date, online_only=True):
+        """
+        Fetch calendar events for a specific user (requires app-level token).
+        online_only=False returns every event, with location + bodyPreview so Google Meet
+        and Zoom invites (which aren't Teams online meetings) can be recognised.
+        """
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Prefer": 'outlook.timezone="UTC"',
         }
+        select = "id,subject,start,end,attendees,onlineMeeting,organizer,isOnlineMeeting"
+        if not online_only:
+            select += ",location,bodyPreview,onlineMeetingUrl"
         params = {
             "startDateTime": f"{start_date}T00:00:00Z",
             "endDateTime": f"{end_date}T23:59:59Z",
-            "$select": "id,subject,start,end,attendees,onlineMeeting,organizer,isOnlineMeeting",
+            "$select": select,
             "$orderby": "start/dateTime desc",
         }
         events = self._calendar_view_all(
             f"{self.base_url}/users/{user_id}/calendarView", params, headers
         )
-        return [e for e in events if e.get("isOnlineMeeting")]
+        return [e for e in events if e.get("isOnlineMeeting")] if online_only else events
 
     def _search_user_recordings(self, user_id, deadline: float | None = None):
         """

@@ -1,0 +1,46 @@
+{# Table rows for an admin's view of one employee's meetings (page + "load older"). #}
+{% import "_macros.html" as ui with context %}
+                {% for meeting in meetings %}
+                {% set open_url = url_for('main.admin_user_meeting', user_email=user_email, event_id=meeting.id) %}
+                <tr data-search="{{ ui.search_text(meeting) }}"
+                    data-href="{{ open_url }}" tabindex="0"
+                    data-event-id="{{ meeting.id }}"
+                    {% if not meeting.status_known %}data-pending{% endif %}
+                    data-status="{{ 'transcript' if meeting.has_transcript else 'manual' }}"
+                    data-video="{{ 'yes' if meeting.has_recording else 'no' }}">
+                    <td>
+                        {% set src_icon = {'teams': 'bi-microsoft-teams', 'google': 'bi-google', 'zoom': 'bi-camera-video'}[meeting.source] %}
+                        <div class="meeting-cell">
+                            <span class="source-icon source-{{ meeting.source }}" title="{{ sources[meeting.source] }}"><i class="bi {{ src_icon }}"></i></span>
+                            <div>
+                                <a class="row-link meeting-subject" href="{{ open_url }}">{{ meeting.subject }}</a>
+                                <div class="meeting-sub">Organizer: {{ meeting.organizer.emailAddress.name or meeting.organizer.emailAddress.address }}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="date-main">{{ meeting.start.dateTime | nice_date }}</div>
+                        <div class="date-sub">{{ meeting.start.dateTime | hm }} &ndash; {{ meeting.end.dateTime | hm }} {{ tz_name }}</div>
+                    </td>
+                    <td>{{ ui.attendee_chips(meeting.get('external_attendees', [])) }}</td>
+                    <td data-cell="transcript">
+                        {% if meeting.source != 'teams' %}<span class="text-muted small" title="Not available for {{ sources[meeting.source] }}">&mdash;</span>
+                        {% elif not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
+                        {% elif meeting.has_transcript %}<span class="status-pill status-ok">Available</span>
+                        {% else %}<span class="status-pill status-manual">Manual</span>{% endif %}
+                    </td>
+                    <td data-cell="video">
+                        {% if meeting.source != 'teams' %}<span class="text-muted small">&mdash;</span>
+                        {% elif not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
+                        {% elif meeting.has_recording %}<span class="status-pill status-sent">Available</span>
+                        {% else %}<span class="text-muted small">&mdash;</span>{% endif %}
+                    </td>
+                    <td>
+                        {% if (meeting.subject ~ '|' ~ (meeting.start.dateTime | local_date)) in sent_keys %}
+                        <span class="status-pill status-sent">Sent</span>
+                        {% else %}
+                        <span class="status-pill status-pending">Pending</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
