@@ -19,7 +19,6 @@
     --cf-danger: #dc2626;
     --cf-teams: #5b5fc7;
     --cf-zoom: #0b5cff;
-    --cf-google: #188038;
     --cf-radius: 12px;
     --cf-radius-sm: 8px;
     --cf-shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 1px 3px rgba(15, 23, 42, .06);
@@ -248,7 +247,6 @@ body {
 .source-icon-lg { width: 48px; height: 48px; border-radius: 12px; font-size: 1.4rem; }
 .source-teams  { background: #ecebfa; color: var(--cf-teams); }
 .source-zoom   { background: #e6efff; color: var(--cf-zoom); }
-.source-google { background: #e6f4ea; color: var(--cf-google); }
 
 /* ── Cards ─────────────────────────────────────────────────── */
 

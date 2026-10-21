@@ -13,22 +13,21 @@ metadata:
 
 **How to apply:** do not introduce a second blueprint without an explicit architecture discussion (invoke `.claude/agents/architect.md` first).
 
-## The three-meeting-source pattern
+## The two-meeting-source pattern
 
-Teams (Graph), Zoom, and Google Meet are each implemented as an isolated `*_auth.py` + `*_client.py` pair:
+Teams (Graph) and Zoom are each implemented as an isolated `*_auth.py` + `*_client.py` pair:
 
 | Source | Auth module | Client module | Client class |
 |---|---|---|---|
 | Teams/Outlook | `app/auth.py` (MSAL) | `app/graph_client.py` | `GraphClient` |
 | Zoom | `app/zoom_auth.py` (S2S OAuth) | `app/zoom_client.py` | `ZoomClient` |
-| Google Meet | `app/google_auth.py` (delegated OAuth2, session tokens) | `app/google_client.py` | `GoogleMeetClient` |
 
-Each client module ends with a `normalize_*`/`normalize_event` step producing the same meeting dict shape: `subject`, `start`/`end` (`dateTime` strings), `organizer`, `attendees`, `external_attendees`, `source`, `has_transcript`. This is what lets `transcript.html`, `mom-builder`, and the send flow treat all three sources identically without per-provider branching in the templates.
+Each client module ends with a `normalize_*`/`normalize_event` step producing the same meeting dict shape: `subject`, `start`/`end` (`dateTime` strings), `organizer`, `attendees`, `external_attendees`, `source`, `has_transcript`. This is what lets `transcript.html`, `mom-builder`, and the send flow treat both sources identically without per-provider branching in the templates.
 
 ## Request flow: fetch → build → send
 
-1. User authenticates via one provider (`/login` for Microsoft, `/google/dashboard` OAuth flow for Google, Zoom uses app-level S2S so no per-user login).
-2. Dashboard route (`/dashboard`, `/zoom/dashboard`, `/google/dashboard`) lists candidate meetings, filtered by `meeting_filter.py` (customer-meeting detection via external attendees, keyword matching).
+1. User authenticates via one provider (`/login` for Microsoft, Zoom uses app-level S2S so no per-user login).
+2. Dashboard route (`/dashboard`, `/zoom/dashboard`) lists candidate meetings, filtered by `meeting_filter.py` (customer-meeting detection via external attendees, keyword matching).
 3. `/transcript` (or the provider-specific variant) fetches the raw transcript via the provider's client, decodes text (`_decode_text_file`: `utf-8-sig` → `utf-8` → `cp1252` → `latin-1`), and parses VTT via `parse_vtt_transcript()` where applicable.
 4. `/mom-builder` sends the transcript text to `mom_generator.generate_mom_from_transcript()` (OpenAI), which returns `(result_dict, error_str)` where `result_dict` has keys `tldr`, `action_items`, `discussion_points`.
 5. `/send` and `/download-mom` call `doc_generator.generate_mom_document()` to build a `.docx` (optionally `convert_docx_to_pdf()` for `.pdf`).

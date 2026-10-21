@@ -18,7 +18,6 @@ class Config:
         "OnlineMeetings.Read",
         "OnlineMeetingTranscript.Read.All",
         "Mail.Send",
-        "Mail.Read",
     ]
 
     GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
@@ -83,12 +82,6 @@ class Config:
     ZOOM_CLIENT_ID = os.getenv("ZOOM_CLIENT_ID", "")
     ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET", "")
     ZOOM_API_BASE = "https://api.zoom.us/v2"
-
-    GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
-    GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-    GOOGLE_REDIRECT_URI = os.getenv(
-        "GOOGLE_REDIRECT_URI", "http://localhost:5100/google/callback"
-    )
 
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 

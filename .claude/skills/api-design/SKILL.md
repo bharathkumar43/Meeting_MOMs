@@ -3,7 +3,7 @@
 ## Description
 Triggered when adding a new Flask route, a new internal JSON endpoint, or a new external API integration (a fourth meeting source, a new OpenAI call site, etc.). Reads `.claude/rules/api-conventions.md`.
 
-**Relationship to gstack**: this is not general API design guidance — gstack has no opinion on this. This skill encodes the specific response shapes and wrapper-module rules already in use in this codebase, so new endpoints and integrations stay consistent with the existing three.
+**Relationship to gstack**: this is not general API design guidance — gstack has no opinion on this. This skill encodes the specific response shapes and wrapper-module rules already in use in this codebase, so new endpoints and integrations stay consistent with the existing two.
 
 ## What this skill does
 1. For a new **internal Flask route**: enforces the response conventions below.
@@ -17,9 +17,9 @@ Triggered when adding a new Flask route, a new internal JSON endpoint, or a new 
 
 ## External API integration conventions
 - One `*_client.py` per provider; never call `requests` directly against a third-party API from `routes.py` or another client module.
-- One `*_auth.py` per provider if it has its own credential/token flow (MSAL, Google OAuth2, Zoom S2S all differ — do not share code between them beyond generic helpers).
+- One `*_auth.py` per provider if it has its own credential/token flow (MSAL and Zoom S2S differ — do not share code between them beyond generic helpers).
 - MOM generation stays exclusively in `mom_generator.py`; it must return `(result_dict, error_str)` and the result must always be validated against the `{tldr, action_items, discussion_points}` shape before use.
-- Any new provider's calendar/meeting data must normalize into the same meeting dict shape used by `GraphClient`/`ZoomClient`/`GoogleMeetClient.normalize_event()` so templates don't need per-provider branches.
+- Any new provider's calendar/meeting data must normalize into the same meeting dict shape used by `GraphClient`/`ZoomClient` so templates don't need per-provider branches.
 
 ## When to hand off
 For scope/consent questions on a brand-new provider, use `.claude/agents/researcher.md` to confirm the provider's actual API capabilities before designing the integration.

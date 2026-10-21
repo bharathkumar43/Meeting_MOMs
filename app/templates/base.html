@@ -43,11 +43,6 @@
                         <i class="bi bi-camera-video"></i> Zoom
                     </a>
                 </li>
-                <li class="nav-item">
-                    <a class="nav-link {{ 'active' if ep.startswith('main.google') }}" href="{{ url_for('main.google_dashboard') }}">
-                        <i class="bi bi-google"></i> Google Meet
-                    </a>
-                </li>
                 {% if nav_user.is_admin %}
                 <li class="nav-item">
                     <a class="nav-link {{ 'active' if ep.startswith('main.admin') }}" href="{{ url_for('main.admin_dashboard') }}">

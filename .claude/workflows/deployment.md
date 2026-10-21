@@ -25,7 +25,7 @@ docker compose logs -f --tail=50   # tail logs after startup
 `docker-compose.yml` provisions `mom-db` (Postgres 16, healthchecked) before starting `mom-app`; `DATABASE_URL` is injected pointing at the `mom-db` service, overriding whatever is in `.env`.
 
 ### 4. Post-deploy verification
-- `/qa <deployed-url>` — real browser test against the deployed instance: login (Microsoft + Google), transcript fetch for at least one of the three sources, MOM generation, send.
+- `/qa <deployed-url>` — real browser test against the deployed instance: login (Microsoft), transcript fetch for at least one of the two sources, MOM generation, send.
 - Check `/admin` loads and the daily audit email is scheduled correctly if `AUDIT_REPORT_ENABLED=true`.
 
 ### 5. Rollback

@@ -28,7 +28,7 @@ from app.models import CalendarSync, MeetingRecord, MeetingUpload
 from app.zoom_auth import get_zoom_access_token
 from app.zoom_client import ZoomClient
 from app.meeting_filter import (
-    filter_by_subject,
+
     parse_vtt_transcript, transcript_to_readable, transcript_view_lines,
 )
 from app.doc_generator import generate_mom_document, convert_docx_to_pdf
@@ -279,7 +279,7 @@ def _local_range_utc(start_date: str, end_date: str) -> tuple[str, str, datetime
 def _teams_query(owner_email: str, keyword: str, start: datetime | None = None,
                  end: datetime | None = None, source: str | None = "teams"):
     """Stored customer meetings for one user, newest first, optional range + subject terms.
-    source: 'teams' (default) / 'google' / 'zoom', or None for every source.
+    source: 'teams' (default) / 'zoom', or None for every source.
     Only meetings that have already started are listed (no transcript/MOM exists before)."""
     now = datetime.utcnow()
     q = meeting_sync.source_filter(MeetingRecord.query, source).filter(
@@ -323,6 +323,12 @@ def time_ago(value: datetime | None) -> str:
 @login_required
 def teams_meetings():
     """Teams customer meetings, read from the database (kept fresh by meeting_sync)."""
+    return _meetings_page("teams")
+
+
+def _meetings_page(source: str):
+    """Teams or Zoom meetings list for the signed-in user (from the database)."""
+    endpoint = "main.teams_meetings" if source == "teams" else "main.zoom_dashboard"
     start_date = request.args.get("start_date", "")
     end_date = request.args.get("end_date", "")
     keyword = request.args.get("keyword", "")
@@ -345,7 +351,7 @@ def teams_meetings():
     next_offset = None
     try:
         if all_mode:
-            list_query = _teams_query(email, keyword)
+            list_query = _teams_query(email, keyword, source=source)
             rows = list_query.limit(_TEAMS_PAGE_SIZE + 1).all()
             if len(rows) > _TEAMS_PAGE_SIZE or not _history_complete(state):
                 next_offset = min(len(rows), _TEAMS_PAGE_SIZE)
@@ -355,11 +361,11 @@ def teams_meetings():
             start_date, end_date, start, end = _local_range_utc(start_date, end_date)
             if state and state.synced_from and start < state.synced_from:
                 meeting_sync.ensure_backfill(email, start)  # range older than stored history
-            rows = _teams_query(email, keyword, start, end).all()
+            rows = _teams_query(email, keyword, start, end, source=source).all()
             list_total = len(rows)
     except ValueError:
         flash("Invalid date range.", "warning")
-        return redirect(url_for("main.teams_meetings"))
+        return redirect(url_for(endpoint))
 
     return render_template(
         "teams_meetings.html",
@@ -371,6 +377,8 @@ def teams_meetings():
         next_offset=next_offset,
         list_total=list_total,
         last_synced_at=state.last_synced_at if state else None,
+        page_source=source,
+        page_endpoint=endpoint,
     )
 
 
@@ -379,6 +387,9 @@ def teams_meetings():
 def teams_meetings_older():
     """Next page of the "All" view (from the database; backfills history when it runs out)."""
     keyword = request.args.get("keyword", "")
+    source = request.args.get("source", "teams")
+    if source not in ("teams", "zoom"):
+        source = "teams"
     try:
         offset = max(int(request.args.get("offset", "0")), 0)
     except ValueError:
@@ -386,7 +397,7 @@ def teams_meetings_older():
     email = _current_user_email()
 
     try:
-        rows = _teams_query(email, keyword).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
+        rows = _teams_query(email, keyword, source=source).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
         state = meeting_sync.get_sync_state(email)
         # Ran out of stored meetings but history isn't complete: fetch older months now
         while len(rows) <= _TEAMS_PAGE_SIZE and not _history_complete(state):
@@ -395,7 +406,7 @@ def teams_meetings_older():
             until = max(reached - timedelta(days=meeting_sync.BACKFILL_CHUNK_DAYS), oldest)
             meeting_sync.ensure_backfill(email, until)
             state = meeting_sync.get_sync_state(email)
-            rows = _teams_query(email, keyword).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
+            rows = _teams_query(email, keyword, source=source).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
     except Exception:
         db.session.rollback()
         logger.exception("teams_meetings_older failed")
@@ -482,11 +493,17 @@ def transcript():
     token = get_token()
     client = GraphClient(token)
 
-    # Fetch the calendar event directly by ID (avoids loading 90 days of events)
-    try:
-        meeting = client.get_event(event_id)
-    except Exception:
-        meeting = None
+    hosted = (meeting_sync.get_record(_current_user_email(), event_id)
+              if event_id.startswith(meeting_sync.ZOOM_HOSTED_PREFIX) else None)
+    if hosted is not None:
+        # Zoom meeting the user hosted with no Outlook invite: the stored record is the event
+        meeting = meeting_sync.record_to_meeting(hosted)
+    else:
+        # Fetch the calendar event directly by ID (avoids loading 90 days of events)
+        try:
+            meeting = client.get_event(event_id)
+        except Exception:
+            meeting = None
 
     if not meeting:
         flash("Meeting not found.", "warning")
@@ -528,6 +545,17 @@ def transcript():
     stored = meeting_sync.get_record(_current_user_email(), meeting["id"])
     cached_media = record_media(stored) if stored and stored.has_transcript is not None else None
     tried_app_lookup = False
+    is_zoom_meeting = stored is not None and meeting_sync.source_of_join_url(stored.join_url) == "zoom"
+    if is_zoom_meeting:
+        # Zoom invite: video + transcript come from the CloudFuze Zoom account, not Teams
+        try:
+            cached_media, transcript_text, transcript_lines = _zoom_media_and_transcript(
+                stored, meeting_sync.record_to_meeting(stored)
+            )
+        except Exception:
+            db.session.rollback()
+            logger.exception("Zoom media lookup failed for %s", meeting.get("subject", ""))
+        tried_app_lookup = True
     if cached_media is None and effective_join_url:
         # One shared lookup (owner, onlineMeeting, transcript, recording) for this page
         app_token0 = get_app_token()
@@ -566,6 +594,8 @@ def transcript():
                         logger.info("Step 0 SUCCESS (cached lookup): %d chars", len(transcript_text))
             except Exception as e:
                 logger.warning("Step 0 FAILED: %s", e)
+    if is_zoom_meeting:
+        skip_lookups = True  # Teams lookups don't apply to Zoom meetings
     if skip_lookups:
         logger.info("Step 0: cached lookup says no transcript; skipping Steps 1-3")
         transcript_text = transcript_text or ""
@@ -799,7 +829,7 @@ def _playable_recording(entry: dict | None, event_id: str, app_client) -> dict |
     """
     if not entry:
         return None
-    if entry.get("kind") == "api":
+    if entry.get("kind") in ("api", "zoom"):
         recording_map = dict(session.get("recording_map", {}))
         recording_map[event_id] = entry
         session["recording_map"] = dict(list(recording_map.items())[-_RECORDING_MAP_LIMIT:])
@@ -832,17 +862,23 @@ def teams_recording_stream():
     """
     event_id = request.args.get("event_id", "")
     entry = session.get("recording_map", {}).get(event_id)
-    if not entry or entry.get("kind") != "api":
+    if not entry or entry.get("kind") not in ("api", "zoom"):
         return Response("Recording not available.", status=404)
 
-    app_token = get_app_token()
-    if not app_token:
-        return Response("Recording temporarily unavailable.", status=503)
-
-    upstream = GraphClient(app_token).open_recording_stream(
-        entry["user_id"], entry["meeting_id"], entry["recording_id"],
-        range_header=request.headers.get("Range"),
-    )
+    if entry["kind"] == "zoom":
+        # Zoom download URLs need the account token, so they never reach the browser
+        zoom = meeting_sync.zoom_client_or_none()
+        if zoom is None:
+            return Response("Recording temporarily unavailable.", status=503)
+        upstream = zoom.open_file_stream(entry["download_url"], request.headers.get("Range"))
+    else:
+        app_token = get_app_token()
+        if not app_token:
+            return Response("Recording temporarily unavailable.", status=503)
+        upstream = GraphClient(app_token).open_recording_stream(
+            entry["user_id"], entry["meeting_id"], entry["recording_id"],
+            range_header=request.headers.get("Range"),
+        )
     if upstream is None:
         return Response("Recording could not be loaded.", status=502)
 
@@ -852,6 +888,8 @@ def teams_recording_stream():
         if k in upstream.headers
     }
     headers.setdefault("Content-Type", "video/mp4")
+    if entry["kind"] == "zoom":
+        headers["Content-Type"] = "video/mp4"  # Zoom serves MP4s as octet-stream
     headers.setdefault("Accept-Ranges", "bytes")
     if request.args.get("download") == "1":
         headers["Content-Disposition"] = 'attachment; filename="meeting-recording.mp4"'
@@ -1646,9 +1684,11 @@ def admin_user_meeting(user_email):
     app_client = GraphClient(app_token)
 
     is_teams = meeting["source"] == "teams"
+    is_zoom = meeting["source"] == "zoom"
     media = record_media(rec) if rec.has_transcript is not None else None
-    if not is_teams:
-        media = {}  # Google Meet / Zoom: no transcript or recording access from here
+    transcript_text, transcript_lines = "", []
+    if is_zoom:
+        media, transcript_text, transcript_lines = _zoom_media_and_transcript(rec, meeting)
     elif media is None or not media.get("online_meeting_id"):
         try:
             media = _lookup_meeting_media(
@@ -1661,8 +1701,7 @@ def admin_user_meeting(user_email):
             logger.exception("Admin media lookup failed for %s", email)
             media = media or {}
 
-    transcript_text, transcript_lines = "", []
-    if media.get("has_transcript") and media.get("online_meeting_id"):
+    if is_teams and media.get("has_transcript") and media.get("online_meeting_id"):
         try:
             uid, mid = media["user_id"], media["online_meeting_id"]
             transcripts = meeting_sync.for_occurrence(
@@ -1696,59 +1735,43 @@ def admin_user_meeting(user_email):
         can_upload=True,
         upload_owner=email,
         uploads=uploads,
-        source_note=None if is_teams else (
-            f"This is a {meeting_sync.SOURCES[meeting['source']]} meeting. Its recording and "
-            "transcript live in that platform's account, so they can't be shown here."
-        ),
+        source_note=_source_note(meeting, media),
     )
+
+
+def _source_note(meeting: dict, media: dict | None) -> str | None:
+    """Explain missing media for Zoom meetings (None when nothing to say)."""
+    source = meeting.get("source")
+    if source == "zoom" and not (media or {}).get("recording") and not (media or {}).get("has_transcript"):
+        return ("No Zoom cloud recording was found for this meeting. It's only available when a "
+                "CloudFuze Zoom host recorded it to the cloud; client-hosted Zoom calls can't be "
+                "loaded here — use Upload instead.")
+    return None
+
+
+def _zoom_media_and_transcript(rec, meeting: dict) -> tuple[dict, str, list]:
+    """Zoom invite -> (media, transcript_text, transcript_lines) from the CloudFuze Zoom account."""
+    media = record_media(rec) if rec.has_transcript is not None else None
+    zoom = meeting_sync.zoom_client_or_none()
+    if media is None or not media.get("recording_api_ok"):
+        media = meeting_sync.lookup_zoom_media(zoom, meeting)
+        meeting_sync.save_media(rec, media)
+        db.session.commit()
+    text, lines = "", []
+    if media.get("transcript_url") and zoom is not None:
+        vtt = zoom.get_transcript_content(media["transcript_url"])
+        if vtt:
+            entries = parse_vtt_transcript(vtt)
+            text, lines = transcript_to_readable(entries), transcript_view_lines(entries)
+    return media, text, lines
 
 
 @main_bp.route("/zoom/dashboard")
 @login_required
 def zoom_dashboard():
-    start_date = request.args.get("start_date", "")
-    end_date = request.args.get("end_date", "")
-    keyword = request.args.get("keyword", "")
+    """Zoom meetings from the user's calendar, matched to CloudFuze Zoom cloud recordings."""
+    return _meetings_page("zoom")
 
-    explicitly_searched = bool(request.args.get("start_date") or request.args.get("end_date"))
-
-    if not start_date:
-        start_date = (timefmt.local_today() - timedelta(days=7)).strftime("%Y-%m-%d")
-    if not end_date:
-        end_date = timefmt.local_today().strftime("%Y-%m-%d")
-
-    user_data = session.get("user", {})
-    user_email = (user_data.get("preferred_username") or user_data.get("upn") or "").lower()
-
-    zoom_token = get_zoom_access_token()
-    zoom_configured = bool(zoom_token)
-
-    meetings = None
-    if explicitly_searched and zoom_token and user_email:
-        try:
-            zoom = ZoomClient(zoom_token)
-            recordings = zoom.list_user_recordings(user_email, start_date, end_date)
-            meetings = [ZoomClient.normalize_recording(r) for r in recordings]
-
-            if keyword:
-                keywords = [k.strip() for k in keyword.split(",")]
-                meetings = filter_by_subject(meetings, keywords)
-
-        except Exception as e:
-            flash(f"Error fetching Zoom recordings: {str(e)}", "danger")
-            meetings = []
-
-    return render_template(
-        "zoom_dashboard.html",
-        meetings=meetings,
-        start_date=start_date,
-        end_date=end_date,
-        keyword=keyword,
-        zoom_configured=zoom_configured,
-    )
-
-
-# ── Zoom Transcript View ──────────────────────────────────────
 
 @main_bp.route("/zoom/transcript")
 @login_required
@@ -1825,7 +1848,7 @@ def zoom_transcript():
     )
 
 
-# ── Google Meetings (calendar-based list + manual transcript upload) ──────────
+# ── Transcript file helpers ──────────────────────────────────────────────────
 
 
 def _subject_match(file_subject: str, meeting_subject: str) -> bool:
@@ -1860,186 +1883,3 @@ def _decode_bytes(raw: bytes) -> str:
     return raw.decode("latin-1", errors="replace")
 
 
-def _parse_google_meet_transcript(html_body: str) -> str:
-    """Strip HTML from a Google Meet transcript email and return plain 'Speaker: text' lines."""
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html_body, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</(p|div|tr|td|li|h[1-6])>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = (
-        text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-        .replace("&nbsp;", " ").replace("&#39;", "'").replace("&quot;", '"')
-    )
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    return "\n".join(lines)
-
-
-def _normalize_google_calendar_event(event: dict) -> dict:
-    """Convert an Outlook calendar event (with Google Meet link) to the standard meeting dict."""
-    from config import Config as _Config
-    org_domain = (_Config.ORG_DOMAIN or "").lower()
-
-    attendees_raw = event.get("attendees") or []
-    attendees = [
-        {
-            "emailAddress": {
-                "name": a.get("emailAddress", {}).get("name", ""),
-                "address": a.get("emailAddress", {}).get("address", ""),
-            }
-        }
-        for a in attendees_raw
-        if (a.get("emailAddress") or {}).get("address")
-    ]
-    external_attendees = [
-        {"name": a["emailAddress"]["name"], "email": a["emailAddress"]["address"]}
-        for a in attendees
-        if org_domain and not a["emailAddress"]["address"].lower().endswith(f"@{org_domain}")
-    ]
-
-    start_dt = ((event.get("start") or {}).get("dateTime") or "")[:19]
-    end_dt = ((event.get("end") or {}).get("dateTime") or "")[:19]
-    organizer = (event.get("organizer") or {}).get("emailAddress") or {}
-
-    return {
-        "id": f"google_cal_{event.get('id', '')}",
-        "subject": event.get("subject") or "Google Meet",
-        "start": {"dateTime": start_dt},
-        "end": {"dateTime": end_dt},
-        "organizer": {"emailAddress": {
-            "name": organizer.get("name", ""),
-            "address": organizer.get("address", ""),
-        }},
-        "attendees": attendees,
-        "external_attendees": external_attendees,
-        "has_transcript": False,
-        "source": "google",
-        "google_meet_code": event.get("_google_meet_code", ""),
-        "event_id": event.get("id", ""),
-    }
-
-
-@main_bp.route("/google/dashboard")
-@login_required
-def google_dashboard():
-    """Google Meet meetings dashboard — auto-loads from Outlook calendar for the selected date range."""
-    start_date = request.args.get("start_date", "")
-    end_date = request.args.get("end_date", "")
-    keyword = request.args.get("keyword", "").strip().lower()
-
-    if not start_date:
-        start_date = (timefmt.local_today() - timedelta(days=7)).strftime("%Y-%m-%d")
-    if not end_date:
-        end_date = timefmt.local_today().strftime("%Y-%m-%d")
-
-    token = get_token()
-    if not token:
-        flash("Your session has expired. Please sign in again.", "warning")
-        return redirect(url_for("main.login"))
-
-    meetings = []
-    try:
-        gc = GraphClient(token)
-        # Graph ranges are UTC days; fetch a day either side, keep meetings whose local
-        # (IST) date is inside the chosen range
-        day = timedelta(days=1)
-        wide_start = (datetime.strptime(start_date, "%Y-%m-%d") - day).strftime("%Y-%m-%d")
-        wide_end = (datetime.strptime(end_date, "%Y-%m-%d") + day).strftime("%Y-%m-%d")
-        raw_events = [
-            e for e in gc.search_google_meet_events(wide_start, wide_end)
-            if start_date <= timefmt.local_date((e.get("start") or {}).get("dateTime", "")) <= end_date
-        ]
-        if keyword:
-            raw_events = [
-                e for e in raw_events
-                if keyword in (e.get("subject") or "").lower()
-            ]
-        meetings = [_normalize_google_calendar_event(e) for e in raw_events]
-    except Exception:
-        logger.exception("google_dashboard calendar fetch failed")
-        flash("Error fetching Google Meet events from calendar. Please try again.", "danger")
-
-    return render_template(
-        "google_dashboard.html",
-        meetings=meetings,
-        start_date=start_date,
-        end_date=end_date,
-        keyword=request.args.get("keyword", ""),
-    )
-
-
-@main_bp.route("/google/transcript")
-@login_required
-def google_transcript():
-    """Fetch meeting details from Outlook calendar, try to auto-load transcript email, render transcript.html."""
-    # GET — fetch meeting details from calendar, then try to auto-find transcript email
-    event_id = request.args.get("event_id", "")
-    meeting = None
-    attendees = []
-    transcript_text = ""
-    auto_loaded = False
-
-    if event_id:
-        token = get_token()
-        if token:
-            try:
-                gc = GraphClient(token)
-                cal_event_id = event_id.removeprefix("google_cal_")
-                raw_event = gc.get_event(cal_event_id)
-                if raw_event:
-                    meeting = _normalize_google_calendar_event(raw_event)
-                    attendees = [
-                        {"name": a["emailAddress"]["name"], "email": a["emailAddress"]["address"]}
-                        for a in meeting.get("attendees", [])
-                    ]
-
-                    # Try to find a matching transcript email in the user's Outlook inbox
-                    meeting_date = meeting["start"]["dateTime"][:10]
-                    if meeting_date:
-                        search_from = (
-                            datetime.strptime(meeting_date, "%Y-%m-%d") - timedelta(days=1)
-                        ).strftime("%Y-%m-%d")
-                        search_to = (
-                            datetime.strptime(meeting_date, "%Y-%m-%d") + timedelta(days=2)
-                        ).strftime("%Y-%m-%d")
-
-                        transcript_emails = gc.search_google_meet_emails(search_from, search_to)
-                        subject_lower = (meeting["subject"] or "").lower()
-                        subject_words = [w for w in subject_lower.split() if len(w) > 3]
-
-                        for email_msg in transcript_emails:
-                            email_subj = email_msg.get("subject", "").lower()
-                            if subject_lower and (
-                                subject_lower in email_subj
-                                or any(w in email_subj for w in subject_words)
-                            ):
-                                full_msg = gc.get_email_message(email_msg["id"])
-                                if full_msg:
-                                    html_body = (full_msg.get("body") or {}).get("content", "")
-                                    if html_body:
-                                        parsed = _parse_google_meet_transcript(html_body)
-                                        if parsed.strip():
-                                            transcript_text = parsed
-                                            auto_loaded = True
-                                            break
-            except Exception:
-                logger.exception("google_transcript: failed to fetch calendar event or transcript email")
-
-    if not meeting:
-        flash("Could not load meeting details.", "warning")
-        return redirect(url_for("main.google_dashboard"))
-
-    user_data = session.get("user", {})
-    user_email = (user_data.get("preferred_username") or user_data.get("upn") or "").lower()
-    if user_email:
-        record_meeting_access(user_email, meeting["subject"], timefmt.local_date(meeting["start"]["dateTime"]))
-
-    # Render transcript.html directly — user can type notes or upload a file even if no auto-transcript
-    return render_template(
-        "transcript.html",
-        meeting=meeting,
-        transcript_text=transcript_text,
-        attendees_json=json.dumps(attendees),
-        error=None,
-        back_url=url_for("main.google_dashboard"),
-        back_label="Google Meetings",
-    )

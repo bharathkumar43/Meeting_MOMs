@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import requests
 
@@ -53,6 +54,79 @@ class ZoomClient:
 
         logger.info("list_user_recordings: found %d recording(s) for %s", len(results), user_email)
         return results
+
+    def list_account_recordings(self, from_date: str, to_date: str, max_pages: int = 20) -> list[dict] | None:
+        """
+        Cloud recordings of every user in the account for a date range (Zoom allows at most
+        one month per call; the caller chunks longer ranges).
+        GET /accounts/me/recordings — needs cloud_recording:read:list_account_recordings:admin.
+        Returns None when the request itself fails (e.g. scope missing).
+        """
+        url = f"{self.base_url}/accounts/me/recordings"
+        params = {"from": from_date, "to": to_date, "page_size": 300}
+        results: list[dict] = []
+        for _ in range(max_pages):
+            try:
+                resp = requests.get(url, headers=self.headers, params=params, timeout=30)
+            except requests.RequestException as e:
+                logger.warning("list_account_recordings failed: %s", e)
+                return None
+            if resp.status_code != 200:
+                logger.warning("list_account_recordings: %d %s", resp.status_code, resp.text[:200])
+                return None
+            data = resp.json()
+            results.extend(data.get("meetings", []))
+            token = data.get("next_page_token", "")
+            if not token:
+                break
+            params["next_page_token"] = token
+        return results
+
+    def user_exists(self, user_email: str) -> bool:
+        """True if the email is a user in the CloudFuze Zoom account."""
+        try:
+            resp = requests.get(f"{self.base_url}/users/{quote(user_email, safe='@')}",
+                                headers=self.headers, timeout=15)
+        except requests.RequestException:
+            return False
+        return resp.status_code == 200
+
+    def get_past_meeting_participants(self, meeting_uuid: str) -> list[dict] | None:
+        """
+        Participants of one past meeting instance.
+        GET /past_meetings/{uuid}/participants — needs meeting:read:list_past_participants:admin.
+        UUIDs starting with '/' or containing '//' must be double URL-encoded.
+        """
+        uuid = meeting_uuid or ""
+        encoded = quote(quote(uuid, safe=""), safe="") if uuid.startswith("/") or "//" in uuid \
+            else quote(uuid, safe="")
+        try:
+            resp = requests.get(f"{self.base_url}/past_meetings/{encoded}/participants",
+                                headers=self.headers, params={"page_size": 300}, timeout=20)
+        except requests.RequestException as e:
+            logger.warning("get_past_meeting_participants failed: %s", e)
+            return None
+        if resp.status_code != 200:
+            logger.info("get_past_meeting_participants: %d %s", resp.status_code, resp.text[:150])
+            return None
+        return resp.json().get("participants", [])
+
+    def open_file_stream(self, download_url: str, range_header: str | None = None):
+        """Stream a recording file (Zoom redirects to a signed CDN URL; Range is forwarded)."""
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        if range_header:
+            headers["Range"] = range_header
+        try:
+            resp = requests.get(download_url, headers=headers, stream=True, allow_redirects=True,
+                                timeout=(5, 60))
+        except requests.RequestException as e:
+            logger.warning("open_file_stream failed: %s", e)
+            return None
+        if resp.status_code not in (200, 206):
+            logger.warning("open_file_stream: HTTP %d", resp.status_code)
+            resp.close()
+            return None
+        return resp
 
     def get_meeting_recordings(self, meeting_id):
         """

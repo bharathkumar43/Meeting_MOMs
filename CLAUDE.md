@@ -1,6 +1,6 @@
 # Meeting MOM Generator
 
-Flask web app for CloudFuze, Inc. that authenticates users via Azure AD (MSAL), fetches meeting transcripts from Microsoft Teams, Zoom, and Google Meet, generates Minutes of Meeting (MOM) documents with OpenAI, and emails them via Microsoft Graph. Deployed via Docker.
+Flask web app for CloudFuze, Inc. that authenticates users via Azure AD (MSAL), fetches meeting transcripts from Microsoft Teams and Zoom, generates Minutes of Meeting (MOM) documents with OpenAI, and emails them via Microsoft Graph. Deployed via Docker.
 
 ---
 
@@ -48,16 +48,16 @@ Inside any Claude Code session, run `/gstack-upgrade`.
 
 ## Tech Stack
 - **Backend**: Python 3.14, Flask 3.1, Flask-SQLAlchemy, Flask-Migrate
-- **Auth**: MSAL (Azure AD / OAuth2) for Microsoft, raw OAuth2 for Google (`app/google_auth.py`), Zoom Server-to-Server OAuth. Session stored on filesystem via flask-session.
+- **Auth**: MSAL (Azure AD / OAuth2) for Microsoft, Zoom Server-to-Server OAuth. Session stored on filesystem via flask-session.
 - **Database**: PostgreSQL (psycopg2-binary 2.9.12 — required for the cp314 wheel)
 - **AI**: OpenAI API (GPT) for MOM generation
-- **Integrations**: Microsoft Graph API (Teams transcripts, calendar, mail), Zoom API, Google Calendar + Google Meet API
+- **Integrations**: Microsoft Graph API (Teams transcripts, calendar, mail), Zoom API
 - **Docs**: python-docx, docx2pdf, cairosvg, reportlab
 - **Frontend**: Bootstrap 5.3 + Bootstrap Icons (served locally from `app/static` — no CDN)
 - **Deployment**: Docker + docker-compose, gunicorn
 
 ## Architecture Summary
-Single Flask app factory (`app/__init__.py`) registering one blueprint (`main_bp` in `app/routes.py`). Three meeting sources (Teams/Graph, Zoom, Google Meet) each have a dedicated auth module and API client module that normalize into a shared meeting dict shape consumed by `transcript.html` and the MOM builder. Transcripts go through `mom_generator.py` (OpenAI) to produce a `{tldr, action_items, discussion_points}` JSON, which `doc_generator.py` renders to `.docx`/`.pdf` and `email_sender.py` sends via Graph `Mail.Send`. All user activity is recorded to Postgres via `activity_tracker.py` for the admin dashboard and daily audit email. See [.claude/memory/architecture.md](.claude/memory/architecture.md) for the full breakdown.
+Single Flask app factory (`app/__init__.py`) registering one blueprint (`main_bp` in `app/routes.py`). Two meeting sources (Teams/Graph and Zoom) each have a dedicated auth module and API client module that normalize into a shared meeting dict shape consumed by `transcript.html` and the MOM builder. Transcripts go through `mom_generator.py` (OpenAI) to produce a `{tldr, action_items, discussion_points}` JSON, which `doc_generator.py` renders to `.docx`/`.pdf` and `email_sender.py` sends via Graph `Mail.Send`. All user activity is recorded to Postgres via `activity_tracker.py` for the admin dashboard and daily audit email. See [.claude/memory/architecture.md](.claude/memory/architecture.md) for the full breakdown.
 
 ## Critical Constraints
 - **Never load Bootstrap from CDN** — served from `app/static/` only.
@@ -77,15 +77,13 @@ app/
   graph_client.py       # Microsoft Graph API client
   zoom_auth.py           # Zoom Server-to-Server OAuth
   zoom_client.py         # Zoom API client
-  google_auth.py         # Google OAuth2 (delegated, session-stored tokens)
-  google_client.py       # Google Calendar + Google Meet API client
   mom_generator.py        # OpenAI transcript -> MOM JSON
   doc_generator.py        # MOM JSON -> .docx / .pdf
   email_sender.py         # Send MOM via Graph API Mail.Send
   meeting_filter.py       # Filter meetings, parse VTT transcripts
   activity_tracker.py     # DB read/write helpers for audit
   audit_report_email.py   # Daily audit email
-  templates/               # Jinja2 templates (base, dashboard, zoom_dashboard, google_dashboard, ...)
+  templates/               # Jinja2 templates (base, dashboard, zoom_dashboard, ...)
   static/                  # css/, js/, fonts/ — all local, no CDN
 config.py                 # Config class (loads .env)
 run.py                    # Entrypoint — python run.py (port 5100)
@@ -110,8 +108,6 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/meeting_moms
 ADMIN_EMAILS=email1@domain.com,email2@domain.com
 MANAGER_EMAILS=email1@domain.com,email2@domain.com
 ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET
-GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
-GOOGLE_REDIRECT_URI=http://localhost:5100/google/callback
 ORG_DOMAIN=cloudfuze.com
 AUDIT_REPORT_ENABLED=false
 AUDIT_SENDER_MAILBOX, AUDIT_REPORT_RECIPIENTS

@@ -18,7 +18,7 @@ If the feature requires an unfamiliar API capability, invoke `.claude/agents/res
 
 ### 4. Implement
 - Add/update route in `app/routes.py`.
-- Add/update helper in the appropriate module (`graph_client.py` / `zoom_client.py` / `google_client.py` / etc.), following `.claude/rules/api-conventions.md`.
+- Add/update helper in the appropriate module (`graph_client.py` / `zoom_client.py` / etc.), following `.claude/rules/api-conventions.md`.
 - Add/update DB model in `app/models.py` if needed.
 - Create/update template in `app/templates/`, extending `base.html`.
 - Run: `flask db migrate -m "description" && flask db upgrade` if a model changed.

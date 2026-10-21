@@ -367,109 +367,6 @@ class GraphClient:
         resp.raise_for_status()
         return True
 
-    # ── Google Meet calendar + transcript methods ────────────────────────────────
-
-    def search_google_meet_events(self, start_date: str, end_date: str) -> list[dict]:
-        """
-        Fetch Outlook calendar events in the date range that contain a Google Meet link.
-        Checks location.displayName and body.content for meet.google.com URLs.
-        Returns raw calendar event dicts with an extra '_google_meet_code' key.
-        """
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Prefer": 'outlook.timezone="UTC"',
-        }
-        params = {
-            "startDateTime": f"{start_date}T00:00:00Z",
-            "endDateTime": f"{end_date}T23:59:59Z",
-            "$select": "id,subject,start,end,attendees,organizer,location,body",
-            "$orderby": "start/dateTime desc",
-        }
-        try:
-            events = self._calendar_view_all(f"{self.base_url}/me/calendarView", params, headers)
-        except Exception as e:
-            logger.error("search_google_meet_events failed: %s", e)
-            return []
-
-        result = []
-        for event in events:
-            location = ((event.get("location") or {}).get("displayName") or "")
-            body_content = ((event.get("body") or {}).get("content") or "")
-            combined = location + " " + body_content
-            if "meet.google.com" not in combined:
-                continue
-            m = re.search(r"meet\.google\.com/([a-z]+-[a-z]+-[a-z]+)", combined)
-            event["_google_meet_code"] = m.group(1) if m else ""
-            result.append(event)
-
-        logger.info("search_google_meet_events: %d Google Meet events found", len(result))
-        return result
-
-    # ── Google Meet email-based transcript methods (legacy) ──────────────────
-
-    def search_google_meet_emails(self, from_date: str, to_date: str) -> list[dict]:
-        """
-        Search the signed-in user's mailbox for emails from Google Meet.
-        from_date / to_date are 'YYYY-MM-DD' strings.
-        Requires Mail.Read scope.
-        Returns list of message summary dicts (no body — call get_email_message for body).
-        """
-        time_min = f"{from_date}T00:00:00Z"
-        time_max = f"{to_date}T23:59:59Z"
-        odata_filter = (
-            f"from/emailAddress/address eq 'meet-recordings-noreply@google.com'"
-            f" and receivedDateTime ge {time_min}"
-            f" and receivedDateTime le {time_max}"
-        )
-        params = {
-            "$filter": odata_filter,
-            "$select": "id,subject,from,receivedDateTime,bodyPreview,toRecipients,ccRecipients",
-            "$orderby": "receivedDateTime desc",
-            "$top": 50,
-        }
-        try:
-            resp = requests.get(
-                f"{self.base_url}/me/messages",
-                headers=self.headers,
-                params=params,
-                timeout=15,
-            )
-            if resp.status_code == 403:
-                logger.warning(
-                    "search_google_meet_emails: 403 — Mail.Read scope may not be consented yet"
-                )
-                return []
-            resp.raise_for_status()
-            return resp.json().get("value", [])
-        except Exception as e:
-            logger.error("search_google_meet_emails failed: %s", e)
-            return []
-
-    def get_email_message(self, message_id: str) -> dict | None:
-        """
-        Fetch a single email message with its full HTML body.
-        GET /me/messages/{id}?$select=id,subject,from,receivedDateTime,body,toRecipients,ccRecipients
-        Requires Mail.Read scope.
-        Returns the message dict or None on failure.
-        """
-        try:
-            resp = requests.get(
-                f"{self.base_url}/me/messages/{message_id}",
-                headers=self.headers,
-                params={
-                    "$select": "id,subject,from,receivedDateTime,body,toRecipients,ccRecipients"
-                },
-                timeout=15,
-            )
-            if resp.status_code in (403, 404):
-                logger.warning("get_email_message %s: HTTP %d", message_id, resp.status_code)
-                return None
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error("get_email_message failed for %s: %s", message_id, e)
-            return None
-
     # ── App-level methods (for admin monitoring) ─────────────
 
     def get_user_id(self, user_email):
@@ -486,14 +383,14 @@ class GraphClient:
     def list_user_calendar_events(self, user_id, start_date, end_date, online_only=True):
         """
         Fetch calendar events for a specific user (requires app-level token).
-        online_only=False returns every event, with location + bodyPreview so Google Meet
-        and Zoom invites (which aren't Teams online meetings) can be recognised.
+        online_only=False returns every event, with location + bodyPreview so Zoom
+        invites (which aren't Teams online meetings) can be recognised.
         """
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Prefer": 'outlook.timezone="UTC"',
         }
-        select = "id,subject,start,end,attendees,onlineMeeting,organizer,isOnlineMeeting"
+        select = "id,subject,start,end,attendees,onlineMeeting,organizer,isOnlineMeeting,isCancelled"
         if not online_only:
             select += ",location,bodyPreview,onlineMeetingUrl"
         params = {

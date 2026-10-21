@@ -10,12 +10,12 @@ Repeatable blueprint for building out test coverage — this repo has no `tests/
 
 ### 2. Identify what needs coverage
 - Route handlers: happy path + auth failure (no session) + bad input, for every route in `app/routes.py` (see the route index in `.claude/memory/repository-map.md`).
-- Pure helpers: `meeting_filter.py`, `mom_generator.py`, `doc_generator.py`, `google_client.py`'s `normalize_event`.
+- Pure helpers: `meeting_filter.py`, `mom_generator.py`, `doc_generator.py`.
 - Prioritize routes/helpers touched by the current change first; backfill the rest opportunistically.
 
 ### 3. Write tests
 - Invoke `.claude/agents/test-writer.md` or the `testing-patterns` skill, per `.claude/rules/testing-standard.md`.
-- Mock all external calls: Graph API, Zoom API, Google Calendar/Meet API, OpenAI, `send_mom_email()`.
+- Mock all external calls: Graph API, Zoom API, OpenAI, `send_mom_email()`.
 - Never mock Flask's session — use `session_transaction()`.
 
 ### 4. Run

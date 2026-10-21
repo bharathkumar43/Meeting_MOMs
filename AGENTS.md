@@ -18,20 +18,20 @@ Defines which specialized subagents exist, what each one does, and when to hand 
 
 ## security-reviewer
 **File**: `.claude/agents/security-reviewer.md`
-**Trigger**: Any change touching auth, session, token handling, Graph/Google/Zoom OAuth scopes, or environment variable access.
-**Capabilities**: OWASP Top 10 review, hardcoded-secret detection, scope minimality checks across all three OAuth flows (MSAL, Google, Zoom S2S), unvalidated redirects.
-**Handoff**: After code changes to `auth.py`, `zoom_auth.py`, `google_auth.py`, `config.py`, or any route handling tokens or user input passed to external APIs.
+**Trigger**: Any change touching auth, session, token handling, Graph/Zoom OAuth scopes, or environment variable access.
+**Capabilities**: OWASP Top 10 review, hardcoded-secret detection, scope minimality checks across both OAuth flows (MSAL, Zoom S2S), unvalidated redirects.
+**Handoff**: After code changes to `auth.py`, `zoom_auth.py`, `config.py`, or any route handling tokens or user input passed to external APIs.
 **Relationship to gstack**: Always run gstack's `/cso` before shipping a security-sensitive change; this agent goes deeper on this repo's specific OAuth flows and session-token storage pattern.
 
 ## test-writer
 **File**: `.claude/agents/test-writer.md`
 **Trigger**: New route added, new helper function added, bug fixed.
-**Capabilities**: Writes pytest tests for Flask routes (test client), unit tests for pure helpers (`meeting_filter.py`, `mom_generator.py`, `doc_generator.py`), mocks Graph/Zoom/Google/OpenAI calls.
+**Capabilities**: Writes pytest tests for Flask routes (test client), unit tests for pure helpers (`meeting_filter.py`, `mom_generator.py`, `doc_generator.py`), mocks Graph/Zoom/OpenAI calls.
 **Handoff**: After implementing a feature or fix — pass the file path(s) changed and the expected behavior.
 
 ## researcher
 **File**: `.claude/agents/researcher.md`
-**Trigger**: Questions about Microsoft Graph API, Google Calendar/Meet API, Zoom API capabilities, OpenAI model behavior, or Python package compatibility.
+**Trigger**: Questions about Microsoft Graph API, Zoom API capabilities, OpenAI model behavior, or Python package compatibility.
 **Capabilities**: Web search + deep read of official docs. Returns a concise findings summary with source URLs.
 **Handoff**: When a feature requires an API capability you're unsure exists, or when a package behaves unexpectedly.
 

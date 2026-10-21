@@ -2,7 +2,7 @@
 Manually uploaded videos and transcripts for stored meetings (MeetingRecord).
 
 Used when Teams has no recording/transcript for a meeting (not recorded, client-hosted,
-channel recording out of reach, Google Meet / Zoom). Videos are written to a private
+channel recording out of reach, client-hosted Zoom). Videos are written to a private
 folder (Config.UPLOAD_DIR) under a generated name — never a user-supplied path — and are
 served only through an authorized route. Transcript text is stored in the database.
 """

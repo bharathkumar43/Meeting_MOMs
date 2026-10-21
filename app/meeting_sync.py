@@ -27,6 +27,7 @@ from sqlalchemy import or_, update
 from app import db
 from app.auth import get_app_token
 from app.graph_client import GraphClient, clear_recording_search_cache
+from app.ttl_cache import TTLCache
 from app.meeting_filter import filter_customer_meetings
 from app.models import CalendarSync, MeetingRecord, MeetingUpload, User
 from config import Config
@@ -51,18 +52,16 @@ ONEDRIVE_FALLBACK_BUDGET_SECONDS = 6
 LOOP_TICK_SECONDS = 60
 
 
-# ── Meeting source (Teams / Google Meet / Zoom) ─────────────────────────────
+# ── Meeting source (Teams / Zoom) ───────────────────────────────────────────
 
-SOURCES = {"teams": "Teams", "google": "Google Meet", "zoom": "Zoom"}
+SOURCES = {"teams": "Teams", "zoom": "Zoom"}
 _TEAMS_HOSTS = ("teams.microsoft.com", "teams.live.com")
 _LINK_PATTERNS = {
-    "google": re.compile(r"https?://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}", re.I),
     "zoom": re.compile(r"https?://[\w.-]*zoom\.us/(?:j|my|w)/[\w./?=&%-]+", re.I),
 }
 # SQL LIKE patterns used to filter stored rows by source (via their join link)
 SOURCE_LIKE = {
     "teams": ["%teams.microsoft.com%", "%teams.live.com%"],
-    "google": ["%meet.google.com%"],
     "zoom": ["%zoom.us%"],
 }
 
@@ -88,8 +87,6 @@ def classify_event(event: dict) -> tuple[str, str] | None:
 
 def source_of_join_url(join_url: str) -> str:
     url = (join_url or "").lower()
-    if "meet.google.com" in url:
-        return "google"
     if "zoom.us" in url:
         return "zoom"
     return "teams"
@@ -184,6 +181,194 @@ def for_occurrence(items: list[dict] | None, meeting: dict) -> list[dict]:
         if (created := _parse_graph_dt(item.get("createdDateTime", ""))) and low <= created <= high
     ]
     return sorted(matched, key=lambda i: i.get("createdDateTime", ""), reverse=True)
+
+
+# ── Zoom (cloud recordings in the CloudFuze Zoom account) ──────────────────
+
+_ZOOM_ID_RE = re.compile(r"zoom\.us/(?:j|w|s|my)/(\d{9,12})", re.I)
+_ZOOM_INDEX = TTLCache(ttl_seconds=600)  # account recordings per month window
+ZOOM_INDEX_MONTH_DAYS = 30
+
+
+def zoom_meeting_id(join_url: str) -> str | None:
+    match = _ZOOM_ID_RE.search(join_url or "")
+    return match.group(1) if match else None
+
+
+def _zoom_recordings_between(zoom, start: datetime, end: datetime) -> list[dict] | None:
+    """Account cloud recordings whose start falls in [start, end] (month chunks, cached)."""
+    found: list[dict] = []
+    cursor = datetime(start.year, start.month, start.day)
+    while cursor <= end:
+        chunk_end = min(cursor + timedelta(days=ZOOM_INDEX_MONTH_DAYS - 1), end)
+        key = (cursor.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d"))
+        rows = _ZOOM_INDEX.get(key)
+        if rows is None:
+            rows = zoom.list_account_recordings(*key)
+            if rows is None:
+                return None
+            _ZOOM_INDEX.set(key, rows)
+        found.extend(rows)
+        cursor = chunk_end + timedelta(days=1)
+    return found
+
+
+def lookup_zoom_media(zoom, meeting: dict) -> dict:
+    """
+    Video + transcript for a Zoom invite: the account recording with the invite's meeting ID
+    that started during this calendar slot. Personal meeting rooms reuse one ID for many
+    meetings, so the time match (not the ID alone) decides.
+    """
+    result = {
+        "source": "zoom", "has_transcript": False, "recording": None,
+        "transcript_url": None, "recording_api_ok": False,
+    }
+    mid = zoom_meeting_id((meeting.get("onlineMeeting") or {}).get("joinUrl", ""))
+    start = _parse_graph_dt((meeting.get("start") or {}).get("dateTime", ""))
+    if not mid or not start or zoom is None:
+        return result
+    end = _parse_graph_dt((meeting.get("end") or {}).get("dateTime", "")) or start + timedelta(hours=1)
+    recordings = _zoom_recordings_between(zoom, start - timedelta(days=1), end + timedelta(days=1))
+    if recordings is None:
+        return result
+    result["recording_api_ok"] = True
+    low, high = start - OCCURRENCE_BEFORE, end + OCCURRENCE_AFTER
+    candidates = []
+    for rec in recordings:
+        if str(rec.get("id")) != mid:
+            continue
+        rec_start = _parse_graph_dt((rec.get("start_time") or "").replace("Z", ""))
+        if rec_start and low <= rec_start <= high:
+            candidates.append((abs((rec_start - start).total_seconds()), rec))
+    if not candidates:
+        return result
+    # Several recordings in one slot (stopped/restarted): prefer one with a transcript, then closest
+    candidates.sort(key=lambda c: (
+        not any(f.get("file_type") == "TRANSCRIPT" for f in c[1].get("recording_files", [])), c[0]
+    ))
+    return {**result, **_zoom_media_from_recording(candidates[0][1])}
+
+
+def _zoom_media_from_recording(rec: dict) -> dict:
+    """Media entry (video + transcript download URLs) from one Zoom cloud recording."""
+    files = [f for f in rec.get("recording_files", []) if (f.get("status") or "").lower() == "completed"]
+    video = next((f for f in files if f.get("file_type") == "MP4"), None)
+    transcript = next((f for f in files if f.get("file_type") == "TRANSCRIPT"), None)
+    media = {
+        "source": "zoom", "recording_api_ok": True, "zoom_uuid": rec.get("uuid"),
+        "host_email": rec.get("host_email"), "has_transcript": bool(transcript),
+        "transcript_url": transcript.get("download_url") if transcript else None,
+        "recording": None,
+    }
+    if video:
+        media["recording"] = {"kind": "zoom", "download_url": video.get("download_url"),
+                              "created": rec.get("start_time", "")}
+    return media
+
+
+# Zoom meetings an employee hosted and recorded with no Outlook invite behind them
+# (scheduled in the Zoom app, personal room, ad hoc) are stored under this event-ID prefix.
+ZOOM_HOSTED_PREFIX = "zoom:"
+_ZOOM_USER_CACHE = TTLCache(ttl_seconds=3600)      # email -> is a CloudFuze Zoom user
+_ZOOM_NOT_CUSTOMER = TTLCache(ttl_seconds=86400)   # recording uuid -> no external participants
+
+
+def _external_participants(zoom, uuid: str) -> list[dict] | None:
+    """
+    Participants from outside the org, or None if Zoom couldn't say. Guests often join
+    without an email, so those count as external when Zoom marks them non-internal.
+    """
+    people = zoom.get_past_meeting_participants(uuid)
+    if people is None:
+        return None
+    domain = f"@{Config.ORG_DOMAIN.lower()}"
+    external, seen = [], set()
+    for p in people:
+        email = (p.get("user_email") or "").strip().lower()
+        name = (p.get("name") or "").strip()
+        if email:
+            is_external = not email.endswith(domain)
+        else:
+            is_external = p.get("internal_user") is False and bool(name)
+        key = email or name.lower()
+        if is_external and key not in seen:
+            seen.add(key)
+            external.append({"name": name or email, "email": email})
+    return external
+
+
+def sync_zoom_hosted(owner_email: str, start: datetime, end: datetime) -> dict:
+    """
+    Store customer Zoom meetings the employee hosted and cloud-recorded in [start, end] that
+    the calendar sync didn't already bring in (no Outlook invite). Same customer rule as
+    Teams: at least one participant from outside the org.
+    """
+    summary = {"added": 0}
+    zoom = zoom_client_or_none()
+    if zoom is None:
+        return summary
+    is_user = _ZOOM_USER_CACHE.get(owner_email)
+    if is_user is None:
+        is_user = zoom.user_exists(owner_email)
+        _ZOOM_USER_CACHE.set(owner_email, is_user)
+    if not is_user:
+        return summary
+
+    recordings: list[dict] = []
+    cursor = start
+    while cursor <= end:  # Zoom allows at most one month per call
+        chunk_end = min(cursor + timedelta(days=ZOOM_INDEX_MONTH_DAYS - 1), end)
+        recordings.extend(zoom.list_user_recordings(
+            owner_email, cursor.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
+        cursor = chunk_end + timedelta(days=1)
+
+    now = datetime.utcnow()
+    for rec in recordings:
+        uuid, mid = rec.get("uuid"), str(rec.get("id") or "")
+        rec_start = _parse_graph_dt((rec.get("start_time") or "").replace("Z", ""))
+        if not uuid or not mid or not rec_start or uuid in _ZOOM_NOT_CUSTOMER:
+            continue
+        event_id = f"{ZOOM_HOSTED_PREFIX}{uuid}"
+        if get_record(owner_email, event_id):
+            continue
+        # Already here through the calendar invite for the same Zoom meeting and slot
+        if MeetingRecord.query.filter(
+            MeetingRecord.owner_email == owner_email,
+            MeetingRecord.join_url.like(f"%{mid}%"),
+            MeetingRecord.start_utc >= rec_start - OCCURRENCE_AFTER - timedelta(hours=1),
+            MeetingRecord.start_utc <= rec_start + OCCURRENCE_BEFORE,
+        ).first():
+            continue
+        external = _external_participants(zoom, uuid)
+        if external is None:
+            continue  # try again next run
+        if not external:
+            _ZOOM_NOT_CUSTOMER.set(uuid, True)
+            continue
+        media = _zoom_media_from_recording(rec)
+        db.session.add(MeetingRecord(
+            owner_email=owner_email, event_id=event_id,
+            subject=(rec.get("topic") or "Zoom meeting")[:500],
+            start_utc=rec_start,
+            end_utc=rec_start + timedelta(minutes=int(rec.get("duration") or 0)),
+            organizer_name=(rec.get("host_email") or owner_email)[:255],
+            organizer_email=(rec.get("host_email") or owner_email)[:255],
+            join_url=f"https://zoom.us/j/{mid}",
+            external_attendees_json=json.dumps(external),
+            has_transcript=media["has_transcript"], has_recording=bool(media["recording"]),
+            media_json=json.dumps(media), status_checked_at=now,
+            first_seen_at=now, updated_at=now,
+        ))
+        summary["added"] += 1
+    db.session.commit()
+    return summary
+
+
+def zoom_client_or_none():
+    from app.zoom_auth import get_zoom_access_token
+    from app.zoom_client import ZoomClient
+    token = get_zoom_access_token()
+    return ZoomClient(token) if token else None
 
 
 def lookup_meeting_media(app_client, meeting: dict, user_ids: list[str]) -> dict:
@@ -294,6 +479,8 @@ def _upsert_window(owner_email: str, meetings: list[dict], start: datetime, end:
             MeetingRecord.owner_email == owner_email,
             MeetingRecord.start_utc >= start,
             MeetingRecord.start_utc <= end,
+            # Zoom-hosted meetings have no calendar event; never prune them here
+            ~MeetingRecord.event_id.like(f"{ZOOM_HOSTED_PREFIX}%"),
         )
     }
     added = updated = 0
@@ -314,18 +501,11 @@ def _upsert_window(owner_email: str, meetings: list[dict], start: datetime, end:
             "join_url": (m.get("onlineMeeting") or {}).get("joinUrl", "") or "",
             "external_attendees_json": json.dumps(m.get("external_attendees", [])),
         }
-        # Google Meet / Zoom invites: no Teams transcript/recording to look up
-        not_teams = source_of_join_url(values["join_url"]) != "teams"
-        fixed_status = {
-            "has_transcript": False, "has_recording": False, "status_checked_at": now,
-            "media_json": json.dumps({"source": source_of_join_url(values["join_url"])}),
-        } if not_teams else {}
 
         rec = existing.get(m["id"]) or get_record(owner_email, m["id"])
         if rec is None:
             db.session.add(MeetingRecord(owner_email=owner_email, event_id=m["id"],
-                                         first_seen_at=now, updated_at=now,
-                                         **values, **fixed_status))
+                                         first_seen_at=now, updated_at=now, **values))
             added += 1
             continue
         changed = {k: v for k, v in values.items() if getattr(rec, k) != v}
@@ -333,8 +513,6 @@ def _upsert_window(owner_email: str, meetings: list[dict], start: datetime, end:
             if "join_url" in changed:  # a different meeting behind the event: re-check status
                 rec.has_transcript = rec.has_recording = None
                 rec.media_json = rec.status_checked_at = None
-                for k, v in fixed_status.items():
-                    setattr(rec, k, v)
             for k, v in changed.items():
                 setattr(rec, k, v)
             rec.updated_at = now
@@ -354,12 +532,14 @@ def _upsert_window(owner_email: str, meetings: list[dict], start: datetime, end:
 def sync_calendar_window(app_client, owner_email: str, user_id: str,
                          start: datetime, end: datetime) -> dict:
     """Fetch [start, end] of one user's calendar and upsert its customer meetings
-    (Teams online meetings plus Google Meet / Zoom invites found by their link)."""
+    (Teams online meetings plus Zoom invites found by their link)."""
     events = app_client.list_user_calendar_events(
         user_id, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), online_only=False
     )
     online = []
     for event in events:
+        if event.get("isCancelled") or (event.get("subject") or "").startswith("Canceled:"):
+            continue  # cancelled meetings are not listed (and later pruned)
         classified = classify_event(event)
         if classified:
             event["onlineMeeting"] = {"joinUrl": classified[1]}
@@ -376,7 +556,9 @@ def due_for_media_check(owner_email: str, limit: int) -> list[MeetingRecord]:
     """Unchecked meetings, plus recent ones whose transcript/recording may have appeared."""
     now = datetime.utcnow()
     recent = now - timedelta(days=RECHECK_RECENT_DAYS)
-    teams_only = source_filter(MeetingRecord.query, "teams")
+    teams_only = MeetingRecord.query.filter(or_(
+        *[MeetingRecord.join_url.like(p) for p in SOURCE_LIKE["teams"] + SOURCE_LIKE["zoom"]]
+    ))
     return (
         teams_only.filter(
             MeetingRecord.owner_email == owner_email,
@@ -404,9 +586,19 @@ def due_for_media_check(owner_email: str, limit: int) -> list[MeetingRecord]:
 
 def check_media(app_client, records: list[MeetingRecord], owner_email: str,
                 owner_user_id: str = "") -> None:
-    """Look up transcript/recording status for records (Graph calls in parallel) and save."""
+    """Look up transcript/recording status for records (Graph calls in parallel) and save.
+    Zoom invites are matched against the CloudFuze Zoom account's cloud recordings."""
     if not records:
         return
+    zoom_records = [r for r in records if source_of_join_url(r.join_url) == "zoom"]
+    if zoom_records:
+        zoom = zoom_client_or_none()
+        for rec in zoom_records:
+            save_media(rec, lookup_zoom_media(zoom, record_to_meeting(rec)))
+        db.session.commit()
+        records = [r for r in records if source_of_join_url(r.join_url) != "zoom"]
+        if not records:
+            return
     meetings = [record_to_meeting(r) for r in records]
 
     def media(meeting: dict) -> dict:
@@ -507,6 +699,11 @@ def sync_user(owner_email: str, *, min_age: timedelta = SYNC_INTERVAL,
             recent_start = row.synced_from  # never before the first sync window
         for k, v in sync_calendar_window(app_client, owner_email, user_id, recent_start, now).items():
             summary[k] += v
+        try:
+            summary["added"] += sync_zoom_hosted(owner_email, recent_start, now)["added"]
+        except Exception:
+            db.session.rollback()
+            logger.exception("Zoom hosted-recording sync failed for %s", owner_email)
 
         # History, one chunk per run so each sync stays short
         if row.synced_from is None:
@@ -524,7 +721,10 @@ def sync_user(owner_email: str, *, min_age: timedelta = SYNC_INTERVAL,
             # arrive late). Drop cached OneDrive search results so a just-finished recording
             # is seen now rather than after the cache expires.
             clear_recording_search_cache()
-            source_filter(MeetingRecord.query, "teams").filter(
+            _ZOOM_INDEX.clear()  # a just-finished Zoom cloud recording shows up now
+            MeetingRecord.query.filter(
+                or_(*[MeetingRecord.join_url.like(p)
+                      for p in SOURCE_LIKE["teams"] + SOURCE_LIKE["zoom"]]),
                 MeetingRecord.owner_email == owner_email,
                 MeetingRecord.start_utc >= now - timedelta(days=2),
                 or_(MeetingRecord.has_transcript.is_(False), MeetingRecord.has_recording.is_(False)),

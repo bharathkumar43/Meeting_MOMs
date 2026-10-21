@@ -27,7 +27,7 @@ metadata:
 **Decision:** psycopg2-binary==2.9.12 in requirements.txt.
 **Why:** Version 2.9.10 has no cp314 wheel for Python 3.14. 2.9.12 ships the first prebuilt cp314 wheel.
 
-## Google Meet added as a third meeting source
+## Google Meet added as a third meeting source (superseded 2026-10-21 — see below)
 **Decision:** `app/google_auth.py` (delegated OAuth2, session-stored tokens) + `app/google_client.py` (`GoogleMeetClient`, wrapping Calendar v3 + Meet v2) added alongside the existing Graph and Zoom integrations, following the same auth-module/client-module/normalize-to-shared-dict split.
 **Why:** Found already implemented in the codebase (routes `/google/dashboard`, `/google/transcript`, templates `google_dashboard.html`/`google_transcript_upload.html`) but undocumented in `CLAUDE.md`, `api-conventions.md`, and `security-reviewer.md` prior to this scaffold pass — those were updated to close the gap.
 **Files:** `app/google_auth.py`, `app/google_client.py`, `app/templates/google_dashboard.html`, `app/templates/google_transcript_upload.html`, `config.py` (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI`).
@@ -39,3 +39,6 @@ metadata:
 **Agent rename:** `.claude/agents/research.md` renamed to `.claude/agents/researcher.md` for consistency with the rest of the agent roster naming (no gstack collision — done for clarity, not required).
 **Rule rename:** `.claude/rules/pr.md` renamed to `.claude/rules/pr-standard.md` to match the target project structure; referenced from `.claude/skills/pr-description/SKILL.md`.
 **How to apply:** Any new project command/skill name must be checked against gstack's reserved list in `CLAUDE.md` before being added.
+
+## Removed Google Meet integration (2026-10-21)
+**Decision:** Removed Google Meet integration — decided not to support Google Meet; only Teams and Zoom sources remain.

@@ -20,7 +20,7 @@ Triggered when the user asks to review code, check a diff, audit a file for issu
 - No CDN links in templates
 - No hardcoded secrets or API keys
 - All routes protected by `@login_required` unless intentionally public
-- OpenAI/Graph/Zoom/Google calls only through their designated wrapper modules (`graph_client.py`, `zoom_client.py`, `google_client.py`)
+- OpenAI/Graph/Zoom calls only through their designated wrapper modules (`graph_client.py`, `zoom_client.py`)
 - Proper error handling on all external API calls
 - No bare `except:` blocks
 - New meeting sources normalize into the shared meeting dict shape (see `.claude/rules/api-conventions.md`)

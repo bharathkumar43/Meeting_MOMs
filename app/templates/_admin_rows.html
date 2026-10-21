@@ -9,7 +9,7 @@
                     data-status="{{ 'transcript' if meeting.has_transcript else 'manual' }}"
                     data-video="{{ 'yes' if meeting.has_recording else 'no' }}">
                     <td>
-                        {% set src_icon = {'teams': 'bi-microsoft-teams', 'google': 'bi-google', 'zoom': 'bi-camera-video'}[meeting.source] %}
+                        {% set src_icon = {'teams': 'bi-microsoft-teams', 'zoom': 'bi-camera-video'}[meeting.source] %}
                         <div class="meeting-cell">
                             <span class="source-icon source-{{ meeting.source }}" title="{{ sources[meeting.source] }}"><i class="bi {{ src_icon }}"></i></span>
                             <div>
@@ -24,14 +24,12 @@
                     </td>
                     <td>{{ ui.attendee_chips(meeting.get('external_attendees', [])) }}</td>
                     <td data-cell="transcript">
-                        {% if meeting.source != 'teams' %}<span class="text-muted small" title="Not available for {{ sources[meeting.source] }}">&mdash;</span>
-                        {% elif not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
+                        {% if not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
                         {% elif meeting.has_transcript %}<span class="status-pill status-ok">Available</span>
                         {% else %}<span class="status-pill status-manual">Manual</span>{% endif %}
                     </td>
                     <td data-cell="video">
-                        {% if meeting.source != 'teams' %}<span class="text-muted small">&mdash;</span>
-                        {% elif not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
+                        {% if not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
                         {% elif meeting.has_recording %}<span class="status-pill status-sent">Available</span>
                         {% else %}<span class="text-muted small">&mdash;</span>{% endif %}
                     </td>

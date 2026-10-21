@@ -1,15 +1,17 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui with context %}
-{% block title %}Teams Meetings - MOM Generator{% endblock %}
+{% block title %}{{ 'Zoom' if (page_source or 'teams') == 'zoom' else 'Teams' }} Meetings - MOM Generator{% endblock %}
 
 {% block content %}
+{% set src = page_source or 'teams' %}
+{% set page_title = 'Zoom Meetings' if src == 'zoom' else 'Teams Meetings' %}
 {% set total_count = meetings | length %}
 
 <div class="page-header">
     <div>
         <h1 class="page-title">
-            <span class="source-icon source-teams"><i class="bi bi-microsoft-teams"></i></span>
-            Teams Meetings
+            <span class="source-icon source-{{ src }}"><i class="bi {{ 'bi-camera-video' if src == 'zoom' else 'bi-microsoft-teams' }}"></i></span>
+            {{ page_title }}
         </h1>
     </div>
     <div class="page-actions align-items-center">
@@ -23,7 +25,7 @@
     </div>
 </div>
 
-{{ ui.filter_bar('main.teams_meetings', start_date, end_date, keyword, include_all=True, default_preset='All') }}
+{{ ui.filter_bar(page_endpoint or 'main.teams_meetings', start_date, end_date, keyword, include_all=True, default_preset='All') }}
 
 {{ ui.results_meta(total_count, grand_total=list_total) }}
 
@@ -48,7 +50,7 @@
         </table>
     </div>
     {% if next_offset is not none %}
-    <div class="load-older" data-load-older="{{ url_for('main.teams_meetings_older', keyword=keyword or None) }}"
+    <div class="load-older" data-load-older="{{ url_for('main.teams_meetings_older', keyword=keyword or None, source=src) }}"
          data-offset="{{ next_offset }}">
         <button type="button" class="btn btn-light-outline btn-sm">
             <i class="bi bi-clock-history"></i> Load older meetings
@@ -62,7 +64,7 @@
     <div class="empty-state">
         <div class="empty-icon"><i class="bi bi-calendar-x"></i></div>
         <h6>No customer meetings in this range</h6>
-        <p class="small mb-3">Only Teams meetings with at least one attendee outside your organization are listed.</p>
+        <p class="small mb-3">Only {{ 'Zoom' if src == 'zoom' else 'Teams' }} meetings with at least one attendee outside your organization are listed.</p>
         <a class="btn btn-sm btn-outline-primary" href="{{ url_for('main.teams_meetings') }}">Show all meetings</a>
     </div>
     {% endif %}

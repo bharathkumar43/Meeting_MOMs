@@ -9,7 +9,7 @@ Use this before grepping the whole repo — it's usually faster to jump straight
 
 ## Root
 - `run.py` — entrypoint, `python run.py`, port 5100.
-- `config.py` — `Config` class, loads `.env`; all environment-driven settings (Azure, Zoom, Google, OpenAI, DB, audit report).
+- `config.py` — `Config` class, loads `.env`; all environment-driven settings (Azure, Zoom, OpenAI, DB, audit report).
 - `docker-compose.yml` — `mom-db` (Postgres 16) + `mom-app` services.
 - `Dockerfile` — app image build.
 - `deploy.ps1` — Windows PowerShell deploy helper script.
@@ -25,8 +25,6 @@ Use this before grepping the whole repo — it's usually faster to jump straight
 - `graph_client.py` — `GraphClient`, Microsoft Graph API wrapper.
 - `zoom_auth.py` — `get_zoom_access_token()`, Zoom Server-to-Server OAuth.
 - `zoom_client.py` — `ZoomClient`, Zoom API wrapper (VTT transcript fetch).
-- `google_auth.py` — Google OAuth2 (delegated, session-stored tokens): `get_google_auth_url`, `exchange_code_for_tokens`, `get_google_token`, `revoke_google_token`.
-- `google_client.py` — `GoogleMeetClient`, wraps Google Calendar v3 + Google Meet v2 (`list_calendar_events`, `find_conference_record`, `list_transcripts`, `build_transcript_text`, `normalize_event`).
 - `meeting_filter.py` — `filter_customer_meetings`, `filter_by_subject`, `parse_vtt_transcript`, `transcript_to_readable` — provider-agnostic.
 - `mom_generator.py` — `generate_mom_from_transcript()` — the only OpenAI call site.
 - `doc_generator.py` — `generate_mom_document()` (.docx), `convert_docx_to_pdf()`.
@@ -53,13 +51,11 @@ Use this before grepping the whole repo — it's usually faster to jump straight
 | `/admin/send-audit-report` (POST) | manually trigger the daily audit email |
 | `/admin/user-meetings/<user_email>` | per-user activity drill-down |
 | `/zoom/dashboard`, `/zoom/transcript` | Zoom equivalents |
-| `/google/dashboard`, `/google/transcript` | Google Meet equivalents |
 
 ## app/templates/
 - `base.html` — shared layout, extended by every page.
 - `login.html`, `dashboard.html`, `transcript.html`, `mom_builder.html`, `send.html` — Teams-source flow.
 - `zoom_dashboard.html` — Zoom-source dashboard.
-- `google_dashboard.html`, `google_transcript_upload.html` — Google Meet-source flow.
 - `admin.html`, `admin_user_meetings.html` — admin views.
 
 ## app/static/

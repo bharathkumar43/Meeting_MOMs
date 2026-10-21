@@ -10,7 +10,7 @@ See `.claude/memory/architecture.md` for the full request-flow narrative. This f
 - Schema changes go through `flask db migrate` / `flask db upgrade` — never hand-edit `migrations/` output, and never run raw DDL against the DB.
 
 ## Meeting-source modules (the client-wrapper pattern)
-Each meeting source (Teams/Graph, Zoom, Google Meet) follows the same two-module split:
+Each meeting source (Teams/Graph and Zoom) follows the same two-module split:
 - `*_auth.py` — owns token acquisition/refresh/revocation for that provider only.
 - `*_client.py` — owns all HTTP calls to that provider's API, and a `normalize_*`/`normalize_event` step that converts the provider's native event/meeting shape into the shared meeting dict (`subject`, `start`, `end`, `organizer`, `attendees`, `external_attendees`, `source`, `has_transcript`).
 
@@ -24,7 +24,7 @@ Adding a fourth source means adding a new `*_auth.py` + `*_client.py` pair that 
 - `activity_tracker.py` — the only module that writes audit rows (`MeetingAccess`, `MOMSent`, login tracking). Route handlers call into it rather than writing to `db.session` directly for these tables.
 
 ## Templates
-- Every page template extends `base.html`. Provider-specific dashboards (`dashboard.html` for Teams, `zoom_dashboard.html`, `google_dashboard.html`) are separate templates by design — do not collapse them into one parameterized template unless the three sources' data shapes fully converge.
+- Every page template extends `base.html`. Provider-specific dashboards (`dashboard.html` for Teams, `zoom_dashboard.html`) are separate templates by design — do not collapse them into one parameterized template unless the two sources' data shapes fully converge.
 
 ## When a boundary needs to move
 If a task seems to require crossing one of these lines (new blueprint, model outside `models.py`, a `*_client.py` calling another provider), stop and invoke `.claude/agents/architect.md` first, or use gstack's `/plan-eng-review` for a broader design discussion. Do not silently work around a boundary.

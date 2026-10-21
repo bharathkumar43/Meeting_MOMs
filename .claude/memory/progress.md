@@ -9,7 +9,6 @@ metadata:
 - Azure AD login / logout via MSAL
 - Teams meeting transcript fetch via Graph API
 - Zoom meeting transcript fetch and MOM generation
-- Google Meet transcript fetch via Google Calendar + Meet API (`/google/dashboard`, `/google/transcript`) — present in code; was undocumented until this scaffold pass, see `.claude/memory/decisions.md`
 - MOM generation via OpenAI (tldr, action_items, discussion_points)
 - .docx and .pdf export
 - Email via Graph API Mail.Send
@@ -28,13 +27,11 @@ metadata:
 - `migrations/` is gitignored — must be regenerated on fresh clone
 - No rate limiting on MOM generation endpoint (OpenAI cost risk)
 - Zoom transcript polling has no retry on transient 429 errors
-- `README.md` has an unresolved git merge conflict (`<<<<<<< HEAD` ... `>>>>>>> b336e0c`, lines 1–107 as of this writing) — needs manual resolution, not yet reflecting the Google Meet feature
-- Google Meet integration has no dedicated security review yet — `security-reviewer.md`/`security-rules.md` were updated to cover it, but no actual audit pass has been run
+- `README.md` has an unresolved git merge conflict (`<<<<<<< HEAD` ... `>>>>>>> b336e0c`, lines 1–107 as of this writing) — needs manual resolution
 
 ## Next Steps (backlog)
 - Add pytest test suite (use test-writer agent)
 - Add rate limiting to `/generate-mom` route
 - Add Zoom 429 retry with exponential backoff
 - Consider splitting routes.py as app grows
-- Resolve the README.md merge conflict and document the Google Meet feature there
-- Run `.claude/agents/security-reviewer.md` (or gstack `/cso`) against the Google OAuth flow
+- Resolve the README.md merge conflict

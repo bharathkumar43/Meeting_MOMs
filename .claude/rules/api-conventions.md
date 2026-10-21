@@ -14,15 +14,6 @@
 - Base URL: `Config.ZOOM_API_BASE = "https://api.zoom.us/v2"`.
 - Transcripts fetched as VTT format; parse with `parse_vtt_transcript()`.
 
-## Google Calendar / Google Meet API
-- Client wrapper: `app/google_client.py` — always use `GoogleMeetClient`, never call `requests` directly for Google Calendar or Meet endpoints.
-- Auth: delegated OAuth2 via `app/google_auth.py`. Tokens are stored in the Flask session (`google_access_token`, `google_refresh_token`, `google_token_expiry`) — use `get_google_token(session)` to obtain a valid token; it auto-refreshes within 60s of expiry and clears session state on failure.
-- Scopes in use: `openid`, `email`, `calendar.readonly`, `meetings.space.readonly` — defined in `_GOOGLE_SCOPES` in `google_auth.py`. Never request broader scopes.
-- Base URLs: `https://www.googleapis.com/calendar/v3` (Calendar), `https://meet.googleapis.com/v2` (Meet).
-- Flow to fetch a transcript: `list_calendar_events()` → `find_conference_record(meeting_code)` → `list_transcripts(conference_record_name)` → `build_transcript_text(transcript_name)`.
-- All Google events are normalized via `GoogleMeetClient.normalize_event()` into the same meeting dict shape Graph and Zoom events use (`subject`, `start`/`end`, `organizer`, `attendees`, `external_attendees`, `source`), so `transcript.html` and the MOM builder can treat all three sources identically.
-- On 401/403/404 from Meet/Calendar endpoints: treat as "not available" (return `None`/`[]`), do not raise — Meet transcripts are frequently missing or not yet processed.
-
 ## OpenAI API
 - Called only in `app/mom_generator.py` via `generate_mom_from_transcript()`.
 - Model selection via environment / Config — do not hardcode model names in route handlers.
