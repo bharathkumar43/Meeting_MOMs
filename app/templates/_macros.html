@@ -10,7 +10,7 @@
 {% macro filter_bar(endpoint, start_date, end_date, keyword='', target='#meetingsTable',
                     show_status=True, url_args={}, placeholder='Search meetings, organizers or attendees…',
                     loaded=True, show_video=False, include_all=False, default_preset='7 days',
-                    sources=None, source='') %}
+                    sources=None, source='', attendance_filters=None, attendance='') %}
 {% set today = date_presets.today %}
 {% set ns = namespace(preset=None) %}
 {% if include_all and loaded and not start_date and not end_date %}{% set ns.preset = 'All' %}{% endif %}
@@ -22,6 +22,9 @@
 
 <form class="filter-bar" method="GET" action="{{ url_for(endpoint, **url_args) }}"
       data-filter-root data-filter-target="{{ target }}" novalidate>
+    {# Keep the chosen range when a dropdown or Enter in search reloads the list #}
+    {% if start_date %}<input type="hidden" name="start_date" value="{{ start_date }}">{% endif %}
+    {% if end_date %}<input type="hidden" name="end_date" value="{{ end_date }}">{% endif %}
     <div class="filter-bar-main">
         <label class="filter-search mb-0">
             <span class="visually-hidden">Search</span>
@@ -29,6 +32,17 @@
             <input type="search" class="form-control" name="keyword" value="{{ keyword or '' }}"
                    placeholder="{{ placeholder }}" autocomplete="off" data-filter-search>
         </label>
+
+        <div class="segmented" role="group" aria-label="Date range">
+            {% if include_all %}
+            <a class="seg-btn {{ 'active' if ns.preset == 'All' }}"
+               href="{{ url_for(endpoint, keyword=keyword or None, **url_args) }}">All</a>
+            {% endif %}
+            {% for label, start in date_presets.presets %}
+            <a class="seg-btn {{ 'active' if ns.preset == label }}"
+               href="{{ url_for(endpoint, start_date=start, end_date=today, keyword=keyword or None, **url_args) }}">{{ label }}</a>
+            {% endfor %}
+        </div>
 
         {% if sources %}
         <label class="visually-hidden" for="fSource">Source</label>
@@ -40,52 +54,20 @@
         </select>
         {% endif %}
 
-        <button class="btn btn-light-outline filter-toggle" type="button" data-bs-toggle="collapse"
-                data-bs-target="#filterPanel" aria-expanded="false" aria-controls="filterPanel">
-            <i class="bi bi-sliders"></i> Filters
-            <span class="badge rounded-pill bg-primary {{ '' if non_default_range else 'd-none' }}"
-                  data-filter-badge data-base="{{ 1 if non_default_range else 0 }}">1</span>
-        </button>
+        {% if attendance_filters %}
+        <label class="visually-hidden" for="fAttendance">Attendance</label>
+        <select class="form-select source-select" id="fAttendance" name="attendance" data-autosubmit>
+            <option value="" {{ 'selected' if not attendance }}>Any attendance</option>
+            {% for key, label in attendance_filters.items() %}
+            <option value="{{ key }}" {{ 'selected' if attendance == key }}>{{ label }}</option>
+            {% endfor %}
+        </select>
+        {% endif %}
     </div>
 
-    <div class="collapse" id="filterPanel">
-        <div class="filter-panel">
-            <div class="filter-row">
-                <div class="segmented" role="group" aria-label="Date range">
-                    {% if include_all %}
-                    <a class="seg-btn {{ 'active' if ns.preset == 'All' }}"
-                       href="{{ url_for(endpoint, keyword=keyword or None, **url_args) }}">All</a>
-                    {% endif %}
-                    {% for label, start in date_presets.presets %}
-                    <a class="seg-btn {{ 'active' if ns.preset == label }}"
-                       href="{{ url_for(endpoint, start_date=start, end_date=today, keyword=keyword or None, **url_args) }}">{{ label }}</a>
-                    {% endfor %}
-                </div>
-
-                <div class="date-range">
-                    <label class="visually-hidden" for="fStart">From</label>
-                    <input type="date" class="form-control" id="fStart" name="start_date"
-                           value="{{ start_date }}" max="{{ today }}" data-date-start>
-                    <span class="date-sep">to</span>
-                    <label class="visually-hidden" for="fEnd">To</label>
-                    <input type="date" class="form-control" id="fEnd" name="end_date"
-                           value="{{ end_date }}" max="{{ today }}" data-date-end>
-                    <div class="invalid-feedback">"To" must be on or after "From".</div>
-                </div>
-
-                <div class="filter-actions">
-                    <a class="btn btn-light-outline" href="{{ url_for(endpoint, **url_args) }}">Reset</a>
-                    <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-check2"></i> Apply
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    {% if non_default_range or keyword %}
+    {% if custom_range or keyword %}
     <div class="filter-chips">
-        {% if non_default_range %}
+        {% if custom_range %}
         <span class="filter-chip">
             <i class="bi bi-calendar-range"></i>
             {% if custom_range %}{{ start_date | nice_date }} &ndash; {{ end_date | nice_date }}
@@ -162,4 +144,19 @@
         </div>
     </td>
 </tr>
+{% endmacro %}
+
+
+{# Meeting source icon, tinted by attendance: green = joined, red = didn't, plain = unknown. #}
+{% macro source_icon(meeting) %}
+{% set src = meeting.source or 'teams' %}
+{% set label = 'Zoom' if src == 'zoom' else 'Teams' %}
+{% if meeting.attended is sameas true %}{% set att = ('att-yes', 'Attended', 'bi-check') %}
+{% elif meeting.attended is sameas false %}{% set att = ('att-no', "Didn't attend", 'bi-x') %}
+{% else %}{% set att = ('', 'Attendance not available', '') %}{% endif %}
+<span class="source-icon source-{{ src }} {{ att[0] }}" title="{{ label }} · {{ att[1] }}"
+      aria-label="{{ label }}, {{ att[1] }}">
+    <i class="bi {{ 'bi-camera-video' if src == 'zoom' else 'bi-microsoft-teams' }}"></i>
+    {% if att[2] %}<span class="att-badge" aria-hidden="true"><i class="bi {{ att[2] }}"></i></span>{% endif %}
+</span>
 {% endmacro %}

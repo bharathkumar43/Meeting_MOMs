@@ -36,7 +36,7 @@ from app.email_sender import send_mom_email
 from app.mom_generator import generate_mom_from_transcript
 from app.activity_tracker import (
     record_login, record_meeting_access, record_mom_sent,
-    get_all_users, get_user_stats, get_pending_moms, get_sent_moms,
+    get_all_users, get_pending_moms, get_sent_moms,
     get_managers, get_non_managers,
     get_audit_rows, get_audit_totals,
     get_all_user_dashboard_stats, get_user_overview,
@@ -297,6 +297,19 @@ def _teams_query(owner_email: str, keyword: str, start: datetime | None = None,
     return q.order_by(MeetingRecord.start_utc.desc())
 
 
+ATTENDANCE_FILTERS = {"attended": "Attended", "absent": "Didn't attend"}
+
+
+def _attendance_filter(query, attendance: str):
+    """Restrict a MeetingRecord query to meetings the owner attended / didn't attend."""
+    if attendance not in ATTENDANCE_FILTERS:
+        return query
+    from app.models import MeetingAttendance
+    return query.join(MeetingAttendance).filter(
+        MeetingAttendance.attended.is_(attendance == "attended")
+    )
+
+
 def _history_complete(state) -> bool:
     """True when no older history will be fetched (always, when backfill is disabled)."""
     if not meeting_sync.BACKFILL_ENABLED:
@@ -332,6 +345,9 @@ def _meetings_page(source: str):
     start_date = request.args.get("start_date", "")
     end_date = request.args.get("end_date", "")
     keyword = request.args.get("keyword", "")
+    attendance = request.args.get("attendance", "")
+    if attendance not in ATTENDANCE_FILTERS:
+        attendance = ""
     email = _current_user_email()
 
     state = meeting_sync.get_sync_state(email)
@@ -351,7 +367,7 @@ def _meetings_page(source: str):
     next_offset = None
     try:
         if all_mode:
-            list_query = _teams_query(email, keyword, source=source)
+            list_query = _attendance_filter(_teams_query(email, keyword, source=source), attendance)
             rows = list_query.limit(_TEAMS_PAGE_SIZE + 1).all()
             if len(rows) > _TEAMS_PAGE_SIZE or not _history_complete(state):
                 next_offset = min(len(rows), _TEAMS_PAGE_SIZE)
@@ -361,7 +377,9 @@ def _meetings_page(source: str):
             start_date, end_date, start, end = _local_range_utc(start_date, end_date)
             if state and state.synced_from and start < state.synced_from:
                 meeting_sync.ensure_backfill(email, start)  # range older than stored history
-            rows = _teams_query(email, keyword, start, end, source=source).all()
+            rows = _attendance_filter(
+                _teams_query(email, keyword, start, end, source=source), attendance
+            ).all()
             list_total = len(rows)
     except ValueError:
         flash("Invalid date range.", "warning")
@@ -379,6 +397,8 @@ def _meetings_page(source: str):
         last_synced_at=state.last_synced_at if state else None,
         page_source=source,
         page_endpoint=endpoint,
+        attendance=attendance,
+        attendance_filters=ATTENDANCE_FILTERS,
     )
 
 
@@ -390,6 +410,7 @@ def teams_meetings_older():
     source = request.args.get("source", "teams")
     if source not in ("teams", "zoom"):
         source = "teams"
+    attendance = request.args.get("attendance", "")
     try:
         offset = max(int(request.args.get("offset", "0")), 0)
     except ValueError:
@@ -397,7 +418,7 @@ def teams_meetings_older():
     email = _current_user_email()
 
     try:
-        rows = _teams_query(email, keyword, source=source).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
+        rows = _attendance_filter(_teams_query(email, keyword, source=source), attendance).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
         state = meeting_sync.get_sync_state(email)
         # Ran out of stored meetings but history isn't complete: fetch older months now
         while len(rows) <= _TEAMS_PAGE_SIZE and not _history_complete(state):
@@ -406,7 +427,7 @@ def teams_meetings_older():
             until = max(reached - timedelta(days=meeting_sync.BACKFILL_CHUNK_DAYS), oldest)
             meeting_sync.ensure_backfill(email, until)
             state = meeting_sync.get_sync_state(email)
-            rows = _teams_query(email, keyword, source=source).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
+            rows = _attendance_filter(_teams_query(email, keyword, source=source), attendance).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
     except Exception:
         db.session.rollback()
         logger.exception("teams_meetings_older failed")
@@ -835,7 +856,10 @@ def _playable_recording(entry: dict | None, event_id: str, app_client) -> dict |
         session["recording_map"] = dict(list(recording_map.items())[-_RECORDING_MAP_LIMIT:])
         stream_url = url_for("main.teams_recording_stream", event_id=event_id)
         return {"src": stream_url, "download_url": f"{stream_url}&download=1", "web_url": ""}
-    file_info = app_client.get_recording_file(entry["user_id"], entry["item_id"])
+    if entry.get("kind") == "sharepoint":  # Teams channel meeting: the team's SharePoint
+        file_info = app_client.get_drive_item_file(entry["drive_id"], entry["item_id"])
+    else:
+        file_info = app_client.get_recording_file(entry["user_id"], entry["item_id"])
     if not file_info or not file_info.get("download_url"):
         return None
     return {
@@ -1331,7 +1355,6 @@ def admin_dashboard():
     users = get_all_users()
     managers = get_managers()
     non_managers = get_non_managers()
-    total_users, total_meetings, total_sent = get_user_stats()
     pending_moms = get_pending_moms()
     sent_moms = get_sent_moms()
     user_dashboard_stats = get_all_user_dashboard_stats()
@@ -1354,10 +1377,6 @@ def admin_dashboard():
         users=users,
         managers=managers,
         non_managers=non_managers,
-        total_users=total_users,
-        total_meetings=total_meetings,
-        total_sent=total_sent,
-        total_pending=len(pending_moms),
         pending_moms=pending_moms,
         sent_moms=sent_moms,
         manager_pending=manager_pending,
@@ -1486,6 +1505,9 @@ def admin_user_meetings(user_email):
     source = request.args.get("source", "")
     if source not in meeting_sync.SOURCES:
         source = ""
+    attendance = request.args.get("attendance", "")
+    if attendance not in ATTENDANCE_FILTERS:
+        attendance = ""
     error = None
 
     # Only users who signed in since sync was enabled are synced automatically; an admin
@@ -1502,7 +1524,8 @@ def admin_user_meetings(user_email):
     next_offset = None
     try:
         if all_mode:
-            list_query = _teams_query(email, keyword, source=source or None)
+            list_query = _attendance_filter(
+                _teams_query(email, keyword, source=source or None), attendance)
             rows = list_query.limit(_ADMIN_PAGE_SIZE + 1).all()
             if len(rows) > _ADMIN_PAGE_SIZE:
                 next_offset = _ADMIN_PAGE_SIZE
@@ -1512,7 +1535,9 @@ def admin_user_meetings(user_email):
             start_date, end_date, start, end = _local_range_utc(start_date, end_date)
             if state and state.synced_from and start < state.synced_from:
                 meeting_sync.ensure_backfill(email, start)
-            rows = _teams_query(email, keyword, start, end, source=source or None).all()
+            rows = _attendance_filter(
+                _teams_query(email, keyword, start, end, source=source or None), attendance
+            ).all()
             list_total = len(rows)
     except ValueError:
         flash("Invalid date range.", "warning")
@@ -1546,7 +1571,6 @@ def admin_user_meetings(user_email):
         user_email=email,
         user_display_name=(db_user.name if db_user and db_user.name else email),
         meetings=[record_to_meeting(r) for r in rows],
-        sent_keys=sent_keys,
         start_date="" if all_mode else start_date,
         end_date="" if all_mode else end_date,
         keyword=keyword,
@@ -1559,6 +1583,8 @@ def admin_user_meetings(user_email):
         people_home=_people_home(),
         source=source,
         sources=meeting_sync.SOURCES,
+        attendance=attendance,
+        attendance_filters=ATTENDANCE_FILTERS,
         kpi=kpi,
     )
 
@@ -1576,19 +1602,16 @@ def admin_user_meetings_older(user_email):
         return jsonify({"status": "error", "message": "Bad request."}), 400
     source = request.args.get("source", "")
     keyword = request.args.get("keyword", "")
-    rows = _teams_query(
+    rows = _attendance_filter(_teams_query(
         email, keyword, source=source if source in meeting_sync.SOURCES else None
-    ).offset(offset).limit(_ADMIN_PAGE_SIZE + 1).all()
+    ), request.args.get("attendance", "")).offset(offset).limit(_ADMIN_PAGE_SIZE + 1).all()
     has_more = len(rows) > _ADMIN_PAGE_SIZE
     rows = rows[:_ADMIN_PAGE_SIZE]
 
-    from app.models import User as UserModel
-    db_user = UserModel.query.filter_by(email=email).first()
-    sent_keys = {f"{s.subject}|{s.meeting_date}" for s in db_user.sent_moms.all()} if db_user else set()
     return jsonify({"status": "ok", "data": {
         "html": render_template(
             "_admin_rows.html", meetings=[record_to_meeting(r) for r in rows],
-            user_email=email, sent_keys=sent_keys, sources=meeting_sync.SOURCES,
+            user_email=email, sources=meeting_sync.SOURCES,
         ),
         "count": len(rows),
         "next_offset": offset + len(rows) if has_more else None,

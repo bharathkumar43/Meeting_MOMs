@@ -25,7 +25,8 @@
     </div>
 </div>
 
-{{ ui.filter_bar(page_endpoint or 'main.teams_meetings', start_date, end_date, keyword, include_all=True, default_preset='All') }}
+{{ ui.filter_bar(page_endpoint or 'main.teams_meetings', start_date, end_date, keyword, include_all=True, default_preset='All',
+                 url_args={'attendance': attendance or None}, attendance_filters=attendance_filters, attendance=attendance) }}
 
 {{ ui.results_meta(total_count, grand_total=list_total) }}
 
@@ -50,7 +51,7 @@
         </table>
     </div>
     {% if next_offset is not none %}
-    <div class="load-older" data-load-older="{{ url_for('main.teams_meetings_older', keyword=keyword or None, source=src) }}"
+    <div class="load-older" data-load-older="{{ url_for('main.teams_meetings_older', keyword=keyword or None, source=src, attendance=attendance or None) }}"
          data-offset="{{ next_offset }}">
         <button type="button" class="btn btn-light-outline btn-sm">
             <i class="bi bi-clock-history"></i> Load older meetings

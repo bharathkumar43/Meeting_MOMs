@@ -91,6 +91,19 @@ class ZoomClient:
             return False
         return resp.status_code == 200
 
+    def list_past_instances(self, meeting_id: str) -> list[dict] | None:
+        """Past occurrences ({uuid, start_time}) of a meeting ID. GET /past_meetings/{id}/instances"""
+        try:
+            resp = requests.get(f"{self.base_url}/past_meetings/{quote(str(meeting_id))}/instances",
+                                headers=self.headers, timeout=20)
+        except requests.RequestException as e:
+            logger.warning("list_past_instances failed: %s", e)
+            return None
+        if resp.status_code != 200:
+            logger.info("list_past_instances: %d %s", resp.status_code, resp.text[:150])
+            return None
+        return resp.json().get("meetings", [])
+
     def get_past_meeting_participants(self, meeting_uuid: str) -> list[dict] | None:
         """
         Participants of one past meeting instance.

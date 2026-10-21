@@ -12,7 +12,7 @@
     data-video="{{ 'yes' if meeting.has_recording else 'no' }}">
     <td>
         <div class="meeting-cell">
-            <span class="source-icon source-{{ meeting.source or 'teams' }}"><i class="bi {{ 'bi-camera-video' if meeting.source == 'zoom' else 'bi-microsoft-teams' }}"></i></span>
+            {{ ui.source_icon(meeting) }}
             <div>
                 <a class="row-link meeting-subject" href="{{ open_url }}">{{ meeting.subject }}</a>
                 <div class="meeting-sub">Organizer: {{ meeting.organizer.emailAddress.name or meeting.organizer.emailAddress.address }}</div>

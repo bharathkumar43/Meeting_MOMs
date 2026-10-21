@@ -134,6 +134,31 @@ class MeetingUpload(db.Model):
         return f"<MeetingUpload {self.kind} for record {self.meeting_record_id}>"
 
 
+class MeetingAttendance(db.Model):
+    """
+    Whether the meeting's owner (the employee whose calendar it's on) actually joined,
+    from the Teams attendance report or Zoom participants. attended None = unknown
+    (no report, e.g. client-organized); final = no further re-checks.
+    """
+    __tablename__ = "meeting_attendance"
+
+    meeting_record_id = db.Column(
+        db.Integer, db.ForeignKey("meeting_records.id", ondelete="CASCADE"), primary_key=True,
+    )
+    attended = db.Column(db.Boolean, nullable=True)
+    final = db.Column(db.Boolean, nullable=False, default=False)
+    checked_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    record = db.relationship(
+        "MeetingRecord",
+        backref=db.backref("attendance", uselist=False, lazy="joined",
+                           cascade="all, delete-orphan", passive_deletes=True),
+    )
+
+    def __repr__(self):
+        return f"<MeetingAttendance record={self.meeting_record_id}: {self.attended}>"
+
+
 class UserRole(db.Model):
     """
     Role and reporting line set by an admin: 'admin' | 'manager' | 'employee', plus the

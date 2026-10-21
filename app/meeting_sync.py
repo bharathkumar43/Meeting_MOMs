@@ -29,7 +29,7 @@ from app.auth import get_app_token
 from app.graph_client import GraphClient, clear_recording_search_cache
 from app.ttl_cache import TTLCache
 from app.meeting_filter import filter_customer_meetings
-from app.models import CalendarSync, MeetingRecord, MeetingUpload, User
+from app.models import CalendarSync, MeetingAttendance, MeetingRecord, MeetingUpload, User
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -371,6 +371,42 @@ def zoom_client_or_none():
     return ZoomClient(token) if token else None
 
 
+_RECORDING_NAME_TIME_RE = re.compile(r"-(\d{8}_\d{6})UTC-")
+
+
+def find_channel_recording(app_client, meeting: dict) -> dict | None:
+    """
+    Recording of a Teams channel meeting. These are saved to the team's SharePoint site and
+    the meeting recordings API doesn't list them, so search the site for the subject and
+    pick the file whose timestamp ('...-20261021_135833UTC-Meeting Recording.mp4') falls in
+    this occurrence's slot. Only used when the organizer is a team, not a person.
+    """
+    organizer = (meeting.get("organizer") or {}).get("emailAddress", {}).get("address", "")
+    if not organizer.lower().endswith(f"@{Config.ORG_DOMAIN.lower()}"):
+        return None
+    if app_client._resolve_user_id_safe(organizer):
+        return None  # a person organized it: their recordings come from the API / OneDrive
+    drive_id = app_client.channel_site_drive_id(organizer)
+    start = _parse_graph_dt((meeting.get("start") or {}).get("dateTime", ""))
+    if not drive_id or not start:
+        return None
+    end = _parse_graph_dt((meeting.get("end") or {}).get("dateTime", "")) or start + timedelta(hours=1)
+    low, high = start - OCCURRENCE_BEFORE, end + OCCURRENCE_AFTER
+    best = None
+    for f in app_client.search_drive_recordings(drive_id, meeting.get("subject", "")):
+        match = _RECORDING_NAME_TIME_RE.search(f.get("name", ""))
+        recorded = (datetime.strptime(match.group(1), "%Y%m%d_%H%M%S") if match
+                    else _parse_graph_dt((f.get("createdDateTime") or "").replace("Z", "")))
+        if recorded and low <= recorded <= high:
+            gap = abs((recorded - start).total_seconds())
+            if best is None or gap < best[0]:
+                best = (gap, f, recorded)
+    if best is None:
+        return None
+    return {"kind": "sharepoint", "drive_id": drive_id, "item_id": best[1]["id"],
+            "created": best[2].strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
 def lookup_meeting_media(app_client, meeting: dict, user_ids: list[str]) -> dict:
     """
     Resolve the onlineMeeting via the first user ID that owns it, then report whether it has
@@ -443,6 +479,8 @@ def record_to_meeting(rec: MeetingRecord) -> dict:
         "status_known": rec.has_transcript is not None,
         "has_transcript": bool(rec.has_transcript),
         "has_recording": bool(rec.has_recording),
+        # True / False = joined or not; None = unknown or not checked yet
+        "attended": rec.attendance.attended if rec.attendance else None,
     }
 
 
@@ -603,7 +641,13 @@ def check_media(app_client, records: list[MeetingRecord], owner_email: str,
 
     def media(meeting: dict) -> dict:
         ids = candidate_user_ids(app_client, meeting, signed_in_email=owner_email)
-        return lookup_meeting_media(app_client, meeting, ids)
+        result = lookup_meeting_media(app_client, meeting, ids)
+        if not result["recording"]:
+            try:
+                result["recording"] = find_channel_recording(app_client, meeting)
+            except Exception:
+                logger.exception("Channel recording lookup failed")
+        return result
 
     # Kept modest: Graph throttles (429) on bursts of parallel calls
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -631,6 +675,110 @@ def check_media(app_client, records: list[MeetingRecord], owner_email: str,
                 }
         save_media(rec, result)
     db.session.commit()
+
+
+# ── Attendance (did the owner actually join?) ───────────────────────────────
+
+ATTENDANCE_CHECKS_PER_RUN = 40
+ATTENDANCE_GRACE = timedelta(minutes=10)      # reports appear a few minutes after the end
+ATTENDANCE_GIVE_UP_AFTER = timedelta(days=1)  # still no report a day later: unknown, stop
+
+
+def _in_slot(rec: MeetingRecord, when: datetime | None) -> bool:
+    end = rec.end_utc or rec.start_utc + timedelta(hours=1)
+    return bool(when) and rec.start_utc - OCCURRENCE_BEFORE <= when <= end + OCCURRENCE_AFTER
+
+
+def _teams_attended(app_client, rec: MeetingRecord, owner_uid: str | None) -> bool | None:
+    """From the Teams attendance report for this occurrence; None if there is no report."""
+    media = record_media(rec) or {}
+    uid, mid = media.get("user_id"), media.get("online_meeting_id")
+    if not uid or not mid:
+        return None
+    reports = app_client.list_attendance(uid, mid)
+    if not reports:
+        return None
+    in_slot = [r for r in reports
+               if _in_slot(rec, _parse_graph_dt(r.get("meetingStartDateTime") or ""))]
+    if not in_slot or any(r.get("records") is None for r in in_slot):
+        return None
+    owner = rec.owner_email.lower()
+    for r in in_slot:
+        for person in r["records"]:
+            if (person.get("emailAddress") or "").lower() == owner:
+                return True
+            if owner_uid and (person.get("identity") or {}).get("id") == owner_uid:
+                return True
+    return False
+
+
+def _zoom_attended(zoom, rec: MeetingRecord, owner_name: str) -> bool | None:
+    """From Zoom's participant list for this occurrence; None if Zoom has none for us."""
+    if zoom is None:
+        return None
+    uuid = (record_media(rec) or {}).get("zoom_uuid")
+    if not uuid:  # not recorded: find this occurrence among the meeting ID's past instances
+        mid = zoom_meeting_id(rec.join_url)
+        instances = zoom.list_past_instances(mid) if mid else None
+        for inst in instances or []:
+            if _in_slot(rec, _parse_graph_dt((inst.get("start_time") or "").replace("Z", ""))):
+                uuid = inst.get("uuid")
+                break
+    if not uuid:
+        return None
+    people = zoom.get_past_meeting_participants(uuid)
+    if not people:
+        return None
+    owner, name = rec.owner_email.lower(), (owner_name or "").strip().lower()
+    for p in people:
+        email = (p.get("user_email") or "").lower()
+        if email == owner or (not email and name and (p.get("name") or "").strip().lower() == name):
+            return True
+    return False
+
+
+def check_attendance(app_client, owner_email: str, owner_uid: str | None, limit: int) -> int:
+    """Fill in MeetingAttendance for ended meetings not yet settled. Returns how many checked."""
+    now = datetime.utcnow()
+    candidates = (
+        MeetingRecord.query.outerjoin(MeetingAttendance)
+        .filter(
+            MeetingRecord.owner_email == owner_email,
+            MeetingRecord.start_utc <= now - ATTENDANCE_GRACE,
+            or_(MeetingAttendance.meeting_record_id.is_(None),
+                db.and_(MeetingAttendance.final.is_(False),
+                        MeetingAttendance.checked_at < now - RECHECK_AFTER)),
+        )
+        .order_by(MeetingRecord.start_utc.desc())
+        .limit(limit * 2)
+        .all()
+    )
+    user = User.query.filter_by(email=owner_email).first()
+    owner_name = user.name if user else ""
+    zoom = None
+    checked = 0
+    for rec in candidates:
+        ended = rec.end_utc or rec.start_utc + timedelta(hours=1)
+        if ended > now - ATTENDANCE_GRACE:
+            continue
+        is_zoom = source_of_join_url(rec.join_url) == "zoom"
+        if not is_zoom and rec.has_transcript is None:
+            continue  # Teams: wait for the media check to find the onlineMeeting first
+        if is_zoom and zoom is None:
+            zoom = zoom_client_or_none()
+        attended = (_zoom_attended(zoom, rec, owner_name) if is_zoom
+                    else _teams_attended(app_client, rec, owner_uid))
+        media = record_media(rec) or {}
+        no_report_possible = not is_zoom and not media.get("online_meeting_id")  # client-organized
+        final = attended is not None or no_report_possible or now - ended > ATTENDANCE_GIVE_UP_AFTER
+        row = rec.attendance or MeetingAttendance(meeting_record_id=rec.id)
+        row.attended, row.final, row.checked_at = attended, final, now
+        db.session.add(row)
+        checked += 1
+        if checked >= limit:
+            break
+    db.session.commit()
+    return checked
 
 
 # ── Per-user sync ───────────────────────────────────────────────────────────
@@ -734,6 +882,12 @@ def sync_user(owner_email: str, *, min_age: timedelta = SYNC_INTERVAL,
             records = due_for_media_check(owner_email, media_limit)
             check_media(app_client, records, owner_email, user_id)
             summary["checked"] = len(records)
+            try:
+                summary["attendance"] = check_attendance(
+                    app_client, owner_email, user_id, ATTENDANCE_CHECKS_PER_RUN)
+            except Exception:
+                db.session.rollback()
+                logger.exception("Attendance check failed for %s", owner_email)
 
         row.last_synced_at = datetime.utcnow()
         row.last_error = ""

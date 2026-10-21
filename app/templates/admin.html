@@ -20,28 +20,23 @@
     </div>
 </div>
 
-<div class="row g-3 mb-4">
-    {% set kpis = [
-        ('Employees', total_users, 'bi-people', 'kpi-blue'),
-        ('Meetings accessed', total_meetings, 'bi-folder2-open', 'kpi-violet'),
-        ('MOMs sent', total_sent, 'bi-send-check', 'kpi-green'),
-        ('MOMs pending', total_pending, 'bi-hourglass-split', 'kpi-amber'),
-    ] %}
-    {% for label, value, icon, tone in kpis %}
-    <div class="col-sm-6 col-lg">
-        <div class="card kpi-card">
-            <span class="kpi-icon {{ tone }}"><i class="bi {{ icon }}"></i></span>
-            <div><div class="kpi-label">{{ label }}</div><div class="kpi-value">{{ value }}</div></div>
-        </div>
+<div class="filter-bar mb-3">
+    <div class="filter-bar-main">
+        <label class="filter-search mb-0">
+            <span class="visually-hidden">Search</span>
+            <i class="bi bi-search"></i>
+            <input type="search" id="overviewSearch" class="form-control"
+                   placeholder="Search by name or email…" autocomplete="off">
+        </label>
+        <label class="visually-hidden" for="roleFilter">Role</label>
+        <select class="form-select source-select" id="roleFilter">
+            <option value="">All roles</option>
+            {% for key in ('admin', 'manager', 'employee') %}
+            <option value="{{ key }}">{{ role_labels[key] }}s</option>
+            {% endfor %}
+        </select>
     </div>
-    {% endfor %}
 </div>
-
-
-                <div class="mb-3">
-                    <input type="text" id="overviewSearch" class="form-control"
-                           placeholder="Search by name or email...">
-                </div>
 
                 {% if user_dashboard_stats %}
                 <div class="card border-0 shadow-sm">
@@ -62,7 +57,8 @@
                                     <tr class="overview-row"
                                         data-href="{{ url_for('main.admin_user_meetings', user_email=u.email) }}" tabindex="0"
                                         data-name="{{ u.name | lower }}"
-                                        data-email="{{ u.email | lower }}">
+                                        data-email="{{ u.email | lower }}"
+                                        data-role="{{ 'admin' if (u.email | lower) in locked_admins else user_roles.get(u.email | lower, 'employee') }}">
                                         <td>
                                             <div class="d-flex align-items-center gap-3">
                                                 <span class="avatar">{{ ((u.name or u.email)[:1]) | upper }}</span>
@@ -210,14 +206,21 @@
     });
 })();
 
-/* Overview table search */
-document.getElementById('overviewSearch').addEventListener('input', function () {
-    const q = this.value.toLowerCase();
-    document.querySelectorAll('#overviewBody .overview-row').forEach(function (row) {
-        const name = row.dataset.name || '';
-        const email = row.dataset.email || '';
-        row.style.display = (!q || name.includes(q) || email.includes(q)) ? '' : 'none';
-    });
-});
+/* Users table: search + role filter */
+(function () {
+    var search = document.getElementById('overviewSearch');
+    var role = document.getElementById('roleFilter');
+    function apply() {
+        var q = search.value.trim().toLowerCase();
+        var r = role.value;
+        document.querySelectorAll('#overviewBody .overview-row').forEach(function (row) {
+            var textOk = !q || (row.dataset.name || '').includes(q) || (row.dataset.email || '').includes(q);
+            var roleOk = !r || row.dataset.role === r;
+            row.hidden = !(textOk && roleOk);
+        });
+    }
+    search.addEventListener('input', apply);
+    role.addEventListener('change', apply);
+})();
 </script>
 {% endblock %}

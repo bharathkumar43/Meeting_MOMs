@@ -9,9 +9,8 @@
                     data-status="{{ 'transcript' if meeting.has_transcript else 'manual' }}"
                     data-video="{{ 'yes' if meeting.has_recording else 'no' }}">
                     <td>
-                        {% set src_icon = {'teams': 'bi-microsoft-teams', 'zoom': 'bi-camera-video'}[meeting.source] %}
                         <div class="meeting-cell">
-                            <span class="source-icon source-{{ meeting.source }}" title="{{ sources[meeting.source] }}"><i class="bi {{ src_icon }}"></i></span>
+                            {{ ui.source_icon(meeting) }}
                             <div>
                                 <a class="row-link meeting-subject" href="{{ open_url }}">{{ meeting.subject }}</a>
                                 <div class="meeting-sub">Organizer: {{ meeting.organizer.emailAddress.name or meeting.organizer.emailAddress.address }}</div>
@@ -32,13 +31,6 @@
                         {% if not meeting.status_known %}<span class="status-pill status-loading">Checking…</span>
                         {% elif meeting.has_recording %}<span class="status-pill status-sent">Available</span>
                         {% else %}<span class="text-muted small">&mdash;</span>{% endif %}
-                    </td>
-                    <td>
-                        {% if (meeting.subject ~ '|' ~ (meeting.start.dateTime | local_date)) in sent_keys %}
-                        <span class="status-pill status-sent">Sent</span>
-                        {% else %}
-                        <span class="status-pill status-pending">Pending</span>
-                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}

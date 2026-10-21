@@ -65,7 +65,7 @@
 
 <div class="row g-4">
     <!-- Pending MOMs -->
-    <div class="col-xl-8">
+    <div class="col-12">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span class="card-title-text"><i class="bi bi-hourglass-split text-warning"></i> Pending MOMs</span>
@@ -108,48 +108,6 @@
                 <p class="small mb-0">Every meeting you opened has a MOM sent.</p>
             </div>
             {% endif %}
-        </div>
-    </div>
-
-    <!-- Sources + account -->
-    <div class="col-xl-4">
-        <div class="card mb-4">
-            <div class="card-header">
-                <span class="card-title-text"><i class="bi bi-lightning-charge text-primary"></i> Start from a meeting</span>
-            </div>
-            <div class="card-body d-grid gap-2">
-                <a class="source-tile" href="{{ url_for('main.teams_meetings') }}">
-                    <span class="source-icon source-icon-lg source-teams"><i class="bi bi-microsoft-teams"></i></span>
-                    <div>
-                        <div class="tile-title">Microsoft Teams</div>
-                        <div class="tile-text">Customer meetings from your calendar</div>
-                    </div>
-                    <i class="bi bi-chevron-right"></i>
-                </a>
-                <a class="source-tile" href="{{ url_for('main.zoom_dashboard') }}">
-                    <span class="source-icon source-icon-lg source-zoom"><i class="bi bi-camera-video"></i></span>
-                    <div>
-                        <div class="tile-title">Zoom</div>
-                        <div class="tile-text">Cloud recordings and transcripts</div>
-                    </div>
-                    <i class="bi bi-chevron-right"></i>
-                </a>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-body d-flex align-items-center gap-3">
-                <span class="avatar avatar-lg">{{ nav_user.initials }}</span>
-                <div class="min-w-0">
-                    <div class="fw-semibold">{{ nav_user.name }}</div>
-                    <div class="text-muted small text-truncate">{{ nav_user.email }}</div>
-                    {% if overview.user %}
-                    <div class="text-muted small mt-1">
-                        {{ overview.user.login_count }} sign-ins &middot; member since {{ overview.user.first_login | local_dt('%b %Y') }}
-                    </div>
-                    {% endif %}
-                </div>
-            </div>
         </div>
     </div>
 

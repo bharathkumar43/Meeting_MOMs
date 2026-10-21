@@ -68,8 +68,9 @@
 </div>
 
 {{ ui.filter_bar('main.admin_user_meetings', start_date, end_date, keyword,
-                 url_args={'user_email': user_email, 'source': source or None},
-                 include_all=True, default_preset='All', sources=sources, source=source) }}
+                 url_args={'user_email': user_email, 'source': source or None, 'attendance': attendance or None},
+                 include_all=True, default_preset='All', sources=sources, source=source,
+                 attendance_filters=attendance_filters, attendance=attendance) }}
 
 {{ ui.results_meta(total, grand_total=list_total) }}
 
@@ -85,7 +86,6 @@
                     <th>External attendees</th>
                     <th>Transcript</th>
                     <th>Video</th>
-                    <th>MOM</th>
                 </tr>
             </thead>
             <tbody>
@@ -96,7 +96,7 @@
     </div>
     {% if next_offset is not none %}
     <div class="load-older"
-         data-load-older="{{ url_for('main.admin_user_meetings_older', user_email=user_email, source=source or None, keyword=keyword or None) }}"
+         data-load-older="{{ url_for('main.admin_user_meetings_older', user_email=user_email, source=source or None, attendance=attendance or None, keyword=keyword or None) }}"
          data-offset="{{ next_offset }}">
         <button type="button" class="btn btn-light-outline btn-sm">
             <i class="bi bi-clock-history"></i> Load older meetings

@@ -248,6 +248,28 @@ body {
 .source-teams  { background: #ecebfa; color: var(--cf-teams); }
 .source-zoom   { background: #e6efff; color: var(--cf-zoom); }
 
+/* Attendance on the admin/manager meeting lists: green = joined, red = didn't */
+.source-icon.att-yes { background: #e3f6ea; color: #1a7f45; }
+.source-icon.att-no  { background: #fde8e8; color: #c62828; }
+.source-icon { position: relative; }
+.att-badge {
+    position: absolute;
+    right: -4px;
+    bottom: -4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--bs-body-bg, #fff);
+    font-size: .7rem;
+    line-height: 1;
+    color: #fff;
+}
+.att-yes .att-badge { background: #1a7f45; }
+.att-no  .att-badge { background: #c62828; }
+
 /* ── Cards ─────────────────────────────────────────────────── */
 
 .card {
@@ -412,74 +434,8 @@ body {
 }
 
 .source-select { width: auto; min-width: 170px; height: 40px; background-color: var(--cf-surface); }
-
-.filter-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: .4rem;
-    height: 40px;
-    font-weight: 500;
-    background: var(--cf-surface);
-}
-
-.filter-toggle .badge { font-size: .7rem; }
-
-.filter-panel {
-    margin-top: .5rem;
-    padding: 1rem;
-    background: var(--cf-surface);
-    border: 1px solid var(--cf-border);
-    border-radius: var(--cf-radius);
-    box-shadow: var(--cf-shadow);
-}
-
-/* One row: presets · date range · actions — every control 38px tall, centred */
-.filter-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: .75rem;
-}
-
-.filter-row .segmented { height: 38px; align-items: stretch; }
-.filter-row .segmented .seg-btn { display: inline-flex; align-items: center; padding: 0 .85rem; }
-.filter-row .seg-btn,
-.filter-row .form-control,
-.filter-row .btn { font-size: .875rem; }
-
-.date-range {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: .5rem;
-}
-
-.date-range .form-control { height: 38px; width: 160px; padding: 0 .75rem; }
-.date-sep { color: var(--cf-muted); font-size: .875rem; }
-
-.date-range .invalid-feedback {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    margin-top: .25rem;
-}
-
-.date-range .form-control.is-invalid ~ .invalid-feedback { display: block; }
-
-.filter-actions { display: flex; gap: .5rem; margin-left: auto; }
-.filter-actions .btn { height: 38px; display: inline-flex; align-items: center; gap: .35rem; padding: 0 1rem; }
-
-@media (max-width: 767.98px) {
-    .filter-actions { margin-left: 0; width: 100%; }
-    .filter-actions .btn { flex: 1; justify-content: center; }
-    .date-range .form-control { width: auto; flex: 1; }
-}
-
-.filter-panel .form-label {
-    font-size: .8125rem;
-    font-weight: 600;
-    color: var(--cf-ink-2);
-}
+.filter-bar-main .segmented { height: 40px; align-items: stretch; background-clip: padding-box; }
+.filter-bar-main .segmented .seg-btn { display: inline-flex; align-items: center; padding: 0 .85rem; font-size: .875rem; }
 
 .filter-chips {
     display: flex;

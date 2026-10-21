@@ -23,6 +23,7 @@ _CALENDAR_PAGE_SIZE = 250
 _CALENDAR_MAX_EVENTS = 2000
 # Per-user OneDrive "Meeting Recording" search results; repeated lookups reuse them
 _RECORDING_SEARCH_CACHE = TTLCache(ttl_seconds=300)
+_CHANNEL_DRIVE_CACHE = TTLCache(ttl_seconds=6 * 3600)  # team alias -> SharePoint drive ID
 
 
 def clear_recording_search_cache() -> None:
@@ -670,23 +671,102 @@ class GraphClient:
                 return []
         return []
 
+    def list_attendance(self, user_id: str, meeting_id: str) -> list[dict] | None:
+        """
+        Attendance reports of an online meeting (one per session/occurrence), each with its
+        attendanceRecords expanded. Needs OnlineMeetingArtifact.Read.All (application).
+        Returns None when the request fails (permission, not found).
+        """
+        base = f"{self.base_url}/users/{quote(user_id)}/onlineMeetings/{quote(meeting_id)}"
+        try:
+            resp = requests.get(f"{base}/attendanceReports", headers=self.headers,
+                                timeout=_TIMEOUT)
+            if resp.status_code != 200:
+                logger.info("list_attendance: HTTP %d", resp.status_code)
+                return None
+            reports = resp.json().get("value", [])
+            for report in reports:
+                r = requests.get(f"{base}/attendanceReports/{quote(report['id'])}/attendanceRecords",
+                                 headers=self.headers, timeout=_TIMEOUT)
+                report["records"] = r.json().get("value", []) if r.status_code == 200 else None
+            return reports
+        except requests.RequestException as e:
+            logger.warning("list_attendance failed: %s", e)
+            return None
+
     def get_recording_file(self, user_id: str, item_id: str) -> dict | None:
         """
         Metadata for a recording in a user's OneDrive, including a short-lived
         pre-authenticated download URL the browser can stream directly (supports seeking).
         """
+        return self._drive_item_info(f"users/{quote(user_id)}/drive/items/{quote(item_id)}")
+
+    def get_drive_item_file(self, drive_id: str, item_id: str) -> dict | None:
+        """Same as get_recording_file for a file in any drive (e.g. a channel's SharePoint)."""
+        return self._drive_item_info(f"drives/{quote(drive_id)}/items/{quote(item_id)}")
+
+    def channel_site_drive_id(self, group_email: str) -> str | None:
+        """
+        Document library of the SharePoint site behind a Teams team, found from the team's
+        group email (M365@cloudfuze.com -> /sites/M365). Channel meeting recordings live
+        here, not in anyone's OneDrive. Needs Sites.Read.All. Cached per alias.
+        """
+        alias = (group_email or "").split("@")[0].strip()
+        if not alias:
+            return None
+        if alias.lower() in _CHANNEL_DRIVE_CACHE:
+            return _CHANNEL_DRIVE_CACHE.get(alias.lower())
+        drive_id = None
         try:
-            # No $select: Graph omits @microsoft.graph.downloadUrl when $select is used
+            resp = requests.get(f"{self.base_url}/sites", headers=self.headers,
+                                params={"search": alias}, timeout=_TIMEOUT)
+            if resp.status_code == 200:
+                for site in resp.json().get("value", []):
+                    if (site.get("webUrl") or "").rstrip("/").lower().endswith(f"/sites/{alias.lower()}"):
+                        d = requests.get(f"{self.base_url}/sites/{site['id']}/drive",
+                                         headers=self.headers, params={"$select": "id"},
+                                         timeout=_TIMEOUT)
+                        if d.status_code == 200:
+                            drive_id = d.json().get("id")
+                        break
+            else:
+                logger.info("channel_site_drive_id: HTTP %d for %s", resp.status_code, alias)
+        except requests.RequestException as e:
+            logger.warning("channel_site_drive_id failed for %s: %s", alias, e)
+            return None  # not cached: try again next time
+        _CHANNEL_DRIVE_CACHE.set(alias.lower(), drive_id)
+        return drive_id
+
+    def search_drive_recordings(self, drive_id: str, subject: str) -> list[dict]:
+        """Meeting-recording .mp4 files in a drive whose name contains the subject."""
+        query = re.sub(r"[^\w\s-]", " ", subject or "").strip()[:80]
+        if not query:
+            return []
+        try:
             resp = requests.get(
-                f"{self.base_url}/users/{quote(user_id)}/drive/items/{quote(item_id)}",
-                headers=self.headers,
-                timeout=_TIMEOUT,
+                f"{self.base_url}/drives/{quote(drive_id)}/root/search(q='{quote(query)}')",
+                headers=self.headers, params={"$top": 50}, timeout=_TIMEOUT,
             )
         except requests.RequestException as e:
-            logger.warning("get_recording_file failed for %s/%s: %s", user_id, item_id, e)
+            logger.warning("search_drive_recordings failed: %s", e)
+            return []
+        if resp.status_code != 200:
+            logger.info("search_drive_recordings: HTTP %d", resp.status_code)
+            return []
+        return [
+            f for f in resp.json().get("value", [])
+            if (f.get("name") or "").lower().endswith(".mp4") and "recording" in f["name"].lower()
+        ]
+
+    def _drive_item_info(self, path: str) -> dict | None:
+        try:
+            # No $select: Graph omits @microsoft.graph.downloadUrl when $select is used
+            resp = requests.get(f"{self.base_url}/{path}", headers=self.headers, timeout=_TIMEOUT)
+        except requests.RequestException as e:
+            logger.warning("drive item lookup failed: %s", e)
             return None
         if resp.status_code != 200:
-            logger.warning("get_recording_file: HTTP %d for user=%s", resp.status_code, user_id)
+            logger.warning("drive item lookup: HTTP %d", resp.status_code)
             return None
         data = resp.json()
         return {
