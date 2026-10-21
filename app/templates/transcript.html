@@ -28,12 +28,26 @@
                 {% endif %}
             </div>
         </div>
-        {% if not read_only %}
-        <button type="submit" class="btn btn-primary btn-create-mom">
-            <i class="bi bi-stars"></i> Create MOM
-        </button>
-        {% endif %}
+        <div class="meeting-actions">
+            {% if can_analyze %}
+            <button type="button" class="btn btn-light-outline" id="analyzeBtn"
+                    data-url="{{ url_for('main.analyze_meeting') }}"
+                    data-owner="{{ upload_owner }}" data-event-id="{{ meeting.id }}">
+                <i class="bi bi-graph-up-arrow"></i> <span>{{ 'Re-analyze' if analysis else 'Analyze' }}</span>
+            </button>
+            {% endif %}
+            {% if not read_only %}
+            <button type="submit" class="btn btn-primary btn-create-mom">
+                <i class="bi bi-stars"></i> Create MOM
+            </button>
+            {% endif %}
+        </div>
     </div>
+
+    {% if can_analyze %}
+    <div class="card mb-4 analysis-card {{ '' if analysis else 'd-none' }}" id="analysisCard" aria-live="polite"></div>
+    <script type="application/json" id="analysisData">{{ analysis | tojson }}</script>
+    {% endif %}
 
     {% if source_note %}
     <div class="alert alert-info d-flex gap-2">
@@ -157,6 +171,7 @@
 {% endblock %}
 
 {% block scripts %}
+{% if can_analyze %}<script src="{{ url_for('static', filename='js/meeting_analysis.js') }}"></script>{% endif %}
 <script>
 (function () {
     var parseUrl = {{ url_for('main.parse_transcript_file') | tojson }};

@@ -159,6 +159,27 @@ class MeetingAttendance(db.Model):
         return f"<MeetingAttendance record={self.meeting_record_id}: {self.attended}>"
 
 
+class MeetingAnalysis(db.Model):
+    """
+    AI review of how CloudFuze employees handled a customer meeting (run on demand from the
+    meeting page; stored so reopening the page costs nothing).
+    """
+    __tablename__ = "meeting_analysis"
+
+    meeting_record_id = db.Column(
+        db.Integer, db.ForeignKey("meeting_records.id", ondelete="CASCADE"), primary_key=True,
+    )
+    result_json = db.Column(db.Text, nullable=False)
+    model = db.Column(db.String(64), nullable=False, default="")
+    input_tokens = db.Column(db.Integer, nullable=False, default=0)
+    output_tokens = db.Column(db.Integer, nullable=False, default=0)
+    created_by = db.Column(db.String(255), nullable=False, default="")
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<MeetingAnalysis record={self.meeting_record_id} by {self.created_by}>"
+
+
 class UserRole(db.Model):
     """
     Role and reporting line set by an admin: 'admin' | 'manager' | 'employee', plus the

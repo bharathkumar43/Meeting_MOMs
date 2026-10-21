@@ -67,6 +67,92 @@
     </div>
 </div>
 
+{% if progress %}
+{% macro tone10(n) %}{{ 'an-good' if n and n >= 8 else ('an-mid' if n and n >= 5 else 'an-bad') }}{% endmacro %}
+{% macro tone5(n) %}{{ 'an-good' if n >= 4 else ('an-ok' if n >= 3 else 'an-bad') }}{% endmacro %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+        <span class="card-title-text"><i class="bi bi-graph-up-arrow text-primary"></i> Meeting performance</span>
+        <span class="text-muted small">From {{ progress.count }} analyzed meeting{{ 's' if progress.count != 1 }}</span>
+    </div>
+    <div class="card-body">
+        <div class="progress-stats">
+            <div class="an-tile {{ tone10(progress.avg_rating) }}">
+                <div class="an-tile-label">Average rating</div>
+                <div class="an-tile-value">{{ progress.avg_rating if progress.avg_rating is not none else '—' }}<small class="text-muted fw-normal">/10</small></div>
+            </div>
+            {% set happy = progress.moods.satisfied %}
+            <div class="an-tile {{ 'an-good' if happy * 2 >= progress.count else 'an-mid' }}">
+                <div class="an-tile-label">Clients satisfied</div>
+                <div class="an-tile-value">{{ happy }}<small class="text-muted fw-normal">&nbsp;of {{ progress.count }}</small></div>
+                <div class="an-tile-sub">{{ progress.moods.neutral }} neutral · {{ progress.moods.dissatisfied }} not satisfied</div>
+            </div>
+            <div class="an-tile {{ 'an-good' if progress.escalations == progress.escalations_resolved else 'an-mid' }}">
+                <div class="an-tile-label">Issues handled</div>
+                <div class="an-tile-value">{{ progress.escalations_resolved }}<small class="text-muted fw-normal">&nbsp;of {{ progress.escalations }} resolved</small></div>
+            </div>
+            {% if progress.best_skill %}
+            <div class="an-tile an-good">
+                <div class="an-tile-label">Strongest skill</div>
+                <div class="an-tile-value fs-6">{{ skills[progress.best_skill] }}</div>
+                {% if progress.weakest_skill and progress.weakest_skill != progress.best_skill %}
+                <div class="an-tile-sub">Focus area: <strong>{{ skills[progress.weakest_skill] }}</strong></div>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="progress-grid">
+            <section>
+                <h3 class="an-heading"><i class="bi bi-grid-3x3-gap"></i>Skills (average, 1–5)</h3>
+                <div class="progress-skills">
+                    {% for key, name in skills.items() %}
+                    {% set v = progress.skills[key] %}
+                    <div class="progress-skill {{ tone5(v) if v is not none else 'an-muted' }}">
+                        <span>{{ name }}</span>
+                        <span class="progress-skill-bar"><span data-bar-w="{{ ((v or 0) / 5 * 100) | round(0, 'floor') | int }}"></span></span>
+                        <span class="progress-skill-val">{{ v if v is not none else '—' }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </section>
+
+            <section>
+                <h3 class="an-heading"><i class="bi bi-bar-chart"></i>Rating per meeting (oldest → newest)</h3>
+                <div class="progress-trend">
+                    {% for m in progress.recent %}
+                    {% set title = (m.start | nice_date) ~ ' · ' ~ m.subject ~ ' · ' ~ (m.rating or '—') ~ '/10' %}
+                    {% if m.event_id %}
+                    <a class="{{ tone10(m.rating) }}" data-bar-h="{{ (m.rating or 1) * 10 }}" title="{{ title }}" aria-label="{{ title }}"
+                       href="{{ url_for('main.admin_user_meeting', user_email=user_email, event_id=m.event_id) }}"></a>
+                    {% else %}
+                    <a class="{{ tone10(m.rating) }}" data-bar-h="{{ (m.rating or 1) * 10 }}" title="{{ title }}" aria-label="{{ title }}" role="img"></a>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+
+                {% if progress.improvements %}
+                <h3 class="an-heading mt-4"><i class="bi bi-arrow-up-right-circle"></i>Recent things to improve</h3>
+                <ul class="an-list an-list-grow">
+                    {% for item in progress.improvements %}
+                    <li><span>{{ item.point }} <span class="text-muted small">· {{ item.subject }}</span></span></li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+                {% if progress.strengths %}
+                <h3 class="an-heading mt-4"><i class="bi bi-hand-thumbs-up"></i>Recent strengths</h3>
+                <ul class="an-list an-list-good">
+                    {% for item in progress.strengths %}
+                    <li><span>{{ item.point }} <span class="text-muted small">· {{ item.subject }}</span></span></li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </section>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 {{ ui.filter_bar('main.admin_user_meetings', start_date, end_date, keyword,
                  url_args={'user_email': user_email, 'source': source or None, 'attendance': attendance or None},
                  include_all=True, default_preset='All', sources=sources, source=source,
@@ -119,4 +205,8 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/filters.js') }}"></script>
 <script src="{{ url_for('static', filename='js/teams_status.js') }}"></script>
+<script>
+document.querySelectorAll('[data-bar-w]').forEach(function (b) { b.style.width = b.dataset.barW + '%'; });
+document.querySelectorAll('[data-bar-h]').forEach(function (b) { b.style.height = b.dataset.barH + '%'; });
+</script>
 {% endblock %}

@@ -18,13 +18,13 @@ from werkzeug.utils import secure_filename
 
 from app.auth import get_auth_url, process_auth_callback, get_token, get_app_token, logout as auth_logout
 from app.graph_client import GraphClient
-from app import db, meeting_sync, meeting_uploads, roles, timefmt
+from app import db, meeting_insights, meeting_sync, meeting_uploads, roles, timefmt
 from app.meeting_sync import (
     candidate_user_ids as _app_user_ids_for_transcript_lookup,
     lookup_meeting_media as _lookup_meeting_media,
     record_media, record_to_meeting,
 )
-from app.models import CalendarSync, MeetingRecord, MeetingUpload
+from app.models import CalendarSync, MeetingAnalysis, MeetingRecord, MeetingUpload, User
 from app.zoom_auth import get_zoom_access_token
 from app.zoom_client import ZoomClient
 from app.meeting_filter import (
@@ -33,7 +33,7 @@ from app.meeting_filter import (
 )
 from app.doc_generator import generate_mom_document, convert_docx_to_pdf
 from app.email_sender import send_mom_email
-from app.mom_generator import generate_mom_from_transcript
+from app.mom_generator import SKILLS, analyze_meeting_conversation, generate_mom_from_transcript
 from app.activity_tracker import (
     record_login, record_meeting_access, record_mom_sent,
     get_all_users, get_pending_moms, get_sent_moms,
@@ -806,6 +806,8 @@ def transcript():
         can_upload=record is not None,
         upload_owner=_current_user_email(),
         uploads=uploads,
+        can_analyze=record is not None and bool(transcript_text or transcript_lines),
+        analysis=_analysis_of(record),
     )
 
 
@@ -1024,6 +1026,108 @@ def uploaded_video(upload_id):
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+def _teams_transcript(app_client, media: dict | None, meeting: dict) -> tuple[str, list]:
+    """(text, lines) of a stored Teams meeting's transcript for this occurrence, or ("", [])."""
+    media = media or {}
+    if not media.get("has_transcript") or not media.get("online_meeting_id"):
+        return "", []
+    try:
+        uid, mid = media["user_id"], media["online_meeting_id"]
+        transcripts = meeting_sync.for_occurrence(app_client.list_transcripts(mid, user_id=uid), meeting)
+        if transcripts:
+            vtt = app_client.get_transcript_content(mid, transcripts[0]["id"], user_id=uid)
+            if vtt:
+                entries = parse_vtt_transcript(vtt)
+                return transcript_to_readable(entries), transcript_view_lines(entries)
+    except Exception:
+        logger.exception("Transcript fetch failed for %s", meeting.get("subject", ""))
+    return "", []
+
+
+def _record_transcript(rec) -> tuple[str, list]:
+    """(text, lines) for a stored meeting: Teams or Zoom transcript, else an uploaded one."""
+    meeting = record_to_meeting(rec)
+    text, lines = "", []
+    if meeting["source"] == "zoom":
+        _, text, lines = _zoom_media_and_transcript(rec, meeting)
+    elif rec.has_transcript:
+        app_token = get_app_token()
+        if app_token:
+            text, lines = _teams_transcript(GraphClient(app_token), record_media(rec), meeting)
+    text, lines, _, _ = _with_uploads(rec, text, lines, recording=True)
+    return text, lines
+
+
+def _analysis_of(rec) -> dict | None:
+    """Saved analysis of this meeting (whoever ran it), as rendered on the page; None if never run."""
+    row = meeting_insights.shared_analysis(rec)
+    if row is None:
+        return None
+    try:
+        result = json.loads(row.result_json)
+    except ValueError:
+        return None
+    result["meta"] = {"at": timefmt.to_local(row.created_at).strftime("%d %b %Y, %H:%M ") + timefmt.TZ_NAME}
+    return result
+
+
+@main_bp.route("/meetings/analyze", methods=["POST"])
+@login_required
+def analyze_meeting():
+    """
+    On-demand AI review of how CloudFuze employees handled a client meeting (JSON
+    {owner, event_id, refresh?}). Saved per meeting, so it runs again only on refresh.
+    """
+    if request.method != "POST" or not request.is_json:
+        return jsonify({"status": "error", "message": "Expected JSON."}), 400
+    payload = request.get_json(silent=True) or {}
+    owner = str(payload.get("owner") or "").strip().lower()
+    event_id = str(payload.get("event_id") or "")
+    me = _current_user_email()
+    if owner and owner != me and not _admin_target_email(owner):
+        return jsonify({"status": "error", "message": "Not allowed."}), 403
+    rec = meeting_sync.get_record(owner or me, event_id) if event_id else None
+    if rec is None:
+        return jsonify({"status": "error", "message": "Meeting not found."}), 404
+
+    if not payload.get("refresh"):
+        saved = _analysis_of(rec)
+        if saved:
+            return jsonify({"status": "ok", "data": saved}), 200
+
+    text, lines = _record_transcript(rec)
+    if not text and not lines:
+        return jsonify({"status": "error",
+                        "message": "This meeting has no transcript to analyze."}), 422
+
+    # Who is CloudFuze: the owner, a CloudFuze organizer, and any speaker matching a staff account
+    owner_user = User.query.filter_by(email=rec.owner_email).first()
+    internal = [owner_user.name if owner_user and owner_user.name else rec.owner_email]
+    if rec.organizer_email.lower().endswith(f"@{Config.ORG_DOMAIN.lower()}"):
+        internal.append(rec.organizer_name)
+    staff = meeting_insights.org_users()
+    internal += [sp for sp in {line.get("speaker", "") for line in lines}
+                 if sp and meeting_insights.email_for(sp, staff)]
+    external = [meeting_insights.attendee_name(a)
+                for a in record_to_meeting(rec).get("external_attendees", []) if isinstance(a, dict)]
+
+    result, usage, error = analyze_meeting_conversation(lines, text, rec.subject, internal, external)
+    if error:
+        return jsonify({"status": "error", "message": error}), 502
+    result = meeting_insights.attach_metrics(result, lines, external)
+    # One analysis per meeting: re-analyzing replaces the shared one
+    row = meeting_insights.shared_analysis(rec) or MeetingAnalysis(meeting_record_id=rec.id)
+    row.result_json = json.dumps(result)
+    row.model = usage["model"][:64]
+    row.input_tokens, row.output_tokens = usage["input_tokens"], usage["output_tokens"]
+    row.created_by, row.created_at = me, datetime.utcnow()
+    db.session.add(row)
+    db.session.commit()
+    logger.info("Analyzed %r for %s by %s (%s, %d in / %d out tokens)", rec.subject,
+                rec.owner_email, me, row.model, row.input_tokens, row.output_tokens)
+    return jsonify({"status": "ok", "data": _analysis_of(rec)}), 200
 
 
 def _with_uploads(record, transcript_text: str, transcript_lines: list, recording):
@@ -1586,6 +1690,8 @@ def admin_user_meetings(user_email):
         attendance=attendance,
         attendance_filters=ATTENDANCE_FILTERS,
         kpi=kpi,
+        progress=meeting_insights.employee_progress(email, db_user.name if db_user else ""),
+        skills=SKILLS,
     )
 
 
@@ -1724,20 +1830,8 @@ def admin_user_meeting(user_email):
             logger.exception("Admin media lookup failed for %s", email)
             media = media or {}
 
-    if is_teams and media.get("has_transcript") and media.get("online_meeting_id"):
-        try:
-            uid, mid = media["user_id"], media["online_meeting_id"]
-            transcripts = meeting_sync.for_occurrence(
-                app_client.list_transcripts(mid, user_id=uid), meeting
-            )
-            if transcripts:
-                vtt = app_client.get_transcript_content(mid, transcripts[0]["id"], user_id=uid)
-                if vtt:
-                    entries = parse_vtt_transcript(vtt)
-                    transcript_text = transcript_to_readable(entries)
-                    transcript_lines = transcript_view_lines(entries)
-        except Exception:
-            logger.exception("Admin transcript fetch failed for %s", email)
+    if is_teams:
+        transcript_text, transcript_lines = _teams_transcript(app_client, media, meeting)
 
     recording = _playable_recording(media.get("recording"), rec.event_id, app_client)
     transcript_text, transcript_lines, recording, uploads = _with_uploads(
@@ -1759,6 +1853,8 @@ def admin_user_meeting(user_email):
         upload_owner=email,
         uploads=uploads,
         source_note=_source_note(meeting, media),
+        can_analyze=bool(transcript_text or transcript_lines),
+        analysis=_analysis_of(rec),
     )
 
 

@@ -84,6 +84,8 @@ class Config:
     ZOOM_API_BASE = "https://api.zoom.us/v2"
 
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    # Cheap model for on-demand meeting conversation analysis (a 1-hour meeting is ~1 cent)
+    OPENAI_ANALYSIS_MODEL = os.getenv("OPENAI_ANALYSIS_MODEL", "gpt-4.1-mini")
 
     SQLALCHEMY_DATABASE_URI = os.getenv(
         "DATABASE_URL",
