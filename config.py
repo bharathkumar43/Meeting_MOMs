@@ -86,6 +86,9 @@ class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     # Cheap model for on-demand meeting conversation analysis (a 1-hour meeting is ~1 cent)
     OPENAI_ANALYSIS_MODEL = os.getenv("OPENAI_ANALYSIS_MODEL", "gpt-4.1-mini")
+    # Keep one OpenAI call (all attempts) inside gunicorn's 120 s worker timeout
+    OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "100"))
+    OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "0"))
 
     SQLALCHEMY_DATABASE_URI = os.getenv(
         "DATABASE_URL",

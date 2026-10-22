@@ -1,9 +1,27 @@
 import json
 import logging
+import threading
+
 import openai
+
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+# One client per API key, reused across requests (keeps its HTTPS connections open)
+_client_cache: dict[str, openai.OpenAI] = {}
+_client_lock = threading.Lock()
+
+
+def _client() -> openai.OpenAI:
+    key = Config.OPENAI_API_KEY
+    with _client_lock:
+        client = _client_cache.get(key)
+        if client is None:
+            client = openai.OpenAI(api_key=key, timeout=Config.OPENAI_TIMEOUT_SECONDS,
+                                   max_retries=Config.OPENAI_MAX_RETRIES)
+            _client_cache[key] = client
+        return client
 
 
 def generate_mom_from_transcript(transcript: str, meeting_subject: str = "") -> tuple[dict, str | None]:
@@ -54,8 +72,7 @@ Rules:
 """
 
     try:
-        client = openai.OpenAI(api_key=Config.OPENAI_API_KEY)
-        response = client.chat.completions.create(
+        response = _client().chat.completions.create(
             model="gpt-4o",
             max_tokens=2048,
             messages=[{"role": "user", "content": prompt}],
@@ -338,8 +355,7 @@ def analyze_meeting_conversation(
     if model.startswith(("gpt-4", "gpt-3")):
         kwargs["temperature"] = 0.2  # newer reasoning models only accept the default
     try:
-        client = openai.OpenAI(api_key=Config.OPENAI_API_KEY)
-        response = client.chat.completions.create(
+        response = _client().chat.completions.create(
             model=model,
             max_completion_tokens=_ANALYSIS_MAX_OUTPUT,
             response_format={"type": "json_object"},

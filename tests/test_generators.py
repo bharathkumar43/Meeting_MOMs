@@ -37,11 +37,13 @@ def test_generate_parses_fenced_json(monkeypatch):
 
     monkeypatch.setattr(mom_generator.Config, "OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(mom_generator.openai, "OpenAI", FakeClient)
-    mom_generator._client_cache.clear() if hasattr(mom_generator, "_client_cache") else None
+    mom_generator._client_cache.clear()
     result, error = mom_generator.generate_mom_from_transcript("transcript", "S")
     assert error is None
     assert result == {"tldr": ["Done"], "action_items": [], "decisions": ["Go"]}
     assert created["api_key"] == "sk-test"
+    # One attempt, bounded below gunicorn's 120 s worker timeout
+    assert created["timeout"] <= 110 and created["max_retries"] == 0
 
 
 def test_docx_contains_sections():
