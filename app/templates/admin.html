@@ -78,9 +78,9 @@
                                             </span>
                                             {% elif assignable %}
                                             <select class="form-select form-select-sm role-select" data-role-email="{{ em }}" aria-label="Role for {{ u.email }}">
-                                                {% for key in ('employee', 'manager', 'admin') %}
-                                                <option value="{{ key }}" {{ 'selected' if role == key }}>{{ role_labels[key] }}</option>
-                                                {% endfor %}
+{%- for key in ('employee', 'manager', 'admin') %}
+<option value="{{ key }}" {{ 'selected' if role == key }}>{{ role_labels[key] }}</option>
+{%- endfor %}
                                             </select>
                                             {% else %}
                                             <span class="badge bg-secondary-subtle text-secondary">{{ role_labels[role] }}</span>
@@ -90,11 +90,10 @@
                                             {% if assignable and role == 'employee' %}
                                             <select class="form-select form-select-sm manager-select" data-manager-email="{{ em }}" aria-label="Manager for {{ u.email }}">
                                                 <option value="">&mdash; No manager &mdash;</option>
-                                                {% for m_email, m_name in manager_choices %}
-                                                {% if m_email != em %}
-                                                <option value="{{ m_email }}" {{ 'selected' if user_managers.get(em) == m_email }}>{{ m_name }}</option>
-                                                {% endif %}
-                                                {% endfor %}
+{#- Options carry no indentation: 300 users x every manager made this page ~1.7 MB #}
+{%- for m_email, m_name in manager_choices if m_email != em %}
+<option value="{{ m_email }}" {{ 'selected' if user_managers.get(em) == m_email }}>{{ m_name }}</option>
+{%- endfor %}
                                             </select>
                                             {% else %}
                                             <span class="text-muted small">&mdash;</span>
