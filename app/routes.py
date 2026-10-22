@@ -36,9 +36,6 @@ from app.email_sender import send_mom_email
 from app.mom_generator import SKILLS, analyze_meeting_conversation, generate_mom_from_transcript
 from app.activity_tracker import (
     record_login, record_meeting_access, record_mom_sent,
-    get_all_users, get_pending_moms, get_sent_moms,
-    get_managers, get_non_managers,
-    get_audit_rows, get_audit_totals,
     get_all_user_dashboard_stats, get_user_overview,
 )
 from app.audit_report_email import send_daily_audit_report
@@ -1455,41 +1452,10 @@ def send_email():
 @main_bp.route("/admin")
 @admin_required
 def admin_dashboard():
-    users = get_all_users()
-    managers = get_managers()
-    non_managers = get_non_managers()
-    pending_moms = get_pending_moms()
-    sent_moms = get_sent_moms()
     user_dashboard_stats = get_all_user_dashboard_stats()
-
-    manager_emails = Config.MANAGER_EMAILS
-    manager_pending = [p for p in pending_moms if p.user_email in manager_emails]
-    manager_sent = [s for s in sent_moms if s.user_email in manager_emails]
-
-    audit_days = max(1, Config.AUDIT_REPORT_DAYS)
-    audit_rows = get_audit_rows(days=audit_days)
-    audit_totals = get_audit_totals(audit_rows)
-    audit_can_send = bool(
-        Config.AUDIT_SENDER_MAILBOX and Config.AUDIT_REPORT_RECIPIENTS
-    )
-    audit_sender_display = Config.AUDIT_SENDER_MAILBOX or "—"
-    audit_recipients_display = ", ".join(Config.AUDIT_REPORT_RECIPIENTS) or "—"
 
     return render_template(
         "admin.html",
-        users=users,
-        managers=managers,
-        non_managers=non_managers,
-        pending_moms=pending_moms,
-        sent_moms=sent_moms,
-        manager_pending=manager_pending,
-        manager_sent=manager_sent,
-        audit_rows=audit_rows,
-        audit_totals=audit_totals,
-        audit_days=audit_days,
-        audit_can_send=audit_can_send,
-        audit_sender_display=audit_sender_display,
-        audit_recipients_display=audit_recipients_display,
         user_dashboard_stats=user_dashboard_stats,
         # Meeting-sync enrolment per user: {email: CalendarSync} (missing = not synced yet)
         sync_states={row.owner_email: row for row in CalendarSync.query.all()},
