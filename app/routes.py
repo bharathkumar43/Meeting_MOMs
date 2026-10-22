@@ -223,7 +223,6 @@ def auth_callback():
             record_login(email, name)
             # Signing in enrols the user in meeting sync (latest window fetched in background)
             meeting_sync.start_initial_sync(current_app._get_current_object(), email)
-        flash("Signed in successfully.", "success")
         return redirect(url_for("main.dashboard"))
     flash("Authentication failed. Please try again.", "danger")
     return redirect(url_for("main.login_page"))
