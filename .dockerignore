@@ -11,6 +11,7 @@ flask_session/
 *.db
 *.docx
 .env
+.env.*
 *.md
 node_modules/
 # Uploaded customer videos live on the mom_uploads volume, never in the image
