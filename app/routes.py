@@ -841,19 +841,21 @@ def _recording_for_meeting(meeting, app_client) -> dict | None:
             recording_map[meeting["id"]] = entry
             session["recording_map"] = dict(list(recording_map.items())[-_RECORDING_MAP_LIMIT:])
 
-    return _playable_recording(entry, meeting["id"], app_client)
+    return _playable_recording(entry, meeting["id"], app_client, _current_user_email())
 
 
-def _playable_recording(entry: dict | None, event_id: str, app_client) -> dict | None:
+def _playable_recording(entry: dict | None, event_id: str, app_client,
+                        owner_email: str) -> dict | None:
     """
     Turn a stored recording entry into player URLs. Recordings-API entries stream through
-    teams_recording_stream, which only serves entries placed in this session's map.
+    teams_recording_stream, which only serves entries placed in this session's map, and
+    only while the viewer may still see the meeting owner's meetings.
     """
     if not entry:
         return None
     if entry.get("kind") in ("api", "zoom"):
         recording_map = dict(session.get("recording_map", {}))
-        recording_map[event_id] = entry
+        recording_map[event_id] = {**entry, "owner": (owner_email or "").lower()}
         session["recording_map"] = dict(list(recording_map.items())[-_RECORDING_MAP_LIMIT:])
         stream_url = url_for("main.teams_recording_stream", event_id=event_id)
         return {"src": stream_url, "download_url": f"{stream_url}&download=1", "web_url": ""}
@@ -888,6 +890,9 @@ def teams_recording_stream():
     event_id = request.args.get("event_id", "")
     entry = session.get("recording_map", {}).get(event_id)
     if not entry or entry.get("kind") not in ("api", "zoom"):
+        return Response("Recording not available.", status=404)
+    # Re-check on every request: a role or team change since the page was opened applies now
+    if not roles.can_view(_current_user_email(), entry.get("owner") or ""):
         return Response("Recording not available.", status=404)
 
     if entry["kind"] == "zoom":
@@ -1840,7 +1845,8 @@ def admin_user_meeting(user_email):
     if is_teams:
         transcript_text, transcript_lines = _teams_transcript(app_client, media, meeting)
 
-    recording = _playable_recording(media.get("recording"), rec.event_id, app_client)
+    recording = _playable_recording(media.get("recording"), rec.event_id, app_client,
+                                    rec.owner_email)
     transcript_text, transcript_lines, recording, uploads = _with_uploads(
         rec, transcript_text, transcript_lines, recording
     )
