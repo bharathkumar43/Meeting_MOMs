@@ -99,14 +99,12 @@ Rules:
         msg = "OpenAI rate limit hit. Please try again in a moment."
         logger.error(msg)
         return _empty(), msg
-    except json.JSONDecodeError as e:
-        msg = f"OpenAI returned non-JSON output: {e}"
-        logger.error(msg)
-        return _empty(), msg
-    except Exception as e:
-        msg = f"MOM generation failed: {e}"
-        logger.exception(msg)
-        return _empty(), msg
+    except json.JSONDecodeError:
+        logger.exception("OpenAI returned non-JSON output")
+        return _empty(), "The AI returned an unreadable answer. Please try again."
+    except Exception:
+        logger.exception("MOM generation failed")
+        return _empty(), "MOM generation failed. Please try again in a moment."
 
 
 def _empty() -> dict:

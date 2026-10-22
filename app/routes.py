@@ -1205,9 +1205,10 @@ def parse_transcript_file():
             text = _text_from_uploaded_vtt(raw)
         else:
             text = _text_from_uploaded_docx(raw)
-    except Exception as e:
+    except Exception:
         logger.exception("parse_transcript_file failed")
-        return jsonify({"error": f"Could not read this file: {str(e)}"}), 400
+        return jsonify({"error": "Could not read this file. Check that it is a valid "
+                                 ".txt, .vtt or .docx transcript."}), 400
 
     if not text or not text.strip():
         return jsonify({"error": "No text could be extracted from this file."}), 400
@@ -1497,8 +1498,10 @@ def send_email():
             sent_to=sent_display,
         )
 
-    except Exception as e:
-        flash(f"Failed to send email: {str(e)}", "danger")
+    except Exception:
+        logger.exception("send_email failed")  # details stay in the server log
+        flash("Failed to send the email. Please try again; if it keeps failing, "
+              "contact an administrator.", "danger")
         return render_template(
             "send.html",
             meeting_subject=mom_data["meeting_subject"],

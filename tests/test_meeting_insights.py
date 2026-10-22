@@ -84,3 +84,46 @@ def test_zoom_analysis_is_shared_between_verified_attendees(db_session):
     db.session.commit()
     shared = meeting_insights.shared_analysis(b)
     assert shared is not None and shared.meeting_record_id == a.id
+
+
+def _named_analysis(rec, name, email=""):
+    return MeetingAnalysis(meeting_record_id=rec.id, model="m", created_by="x", result_json=json.dumps({
+        "client_mood": {"level": "satisfied"}, "escalation": {"is_escalation": False},
+        "employees": [{"name": name, "email": email, "rating": 3, "scores": {},
+                       "strengths": [], "improvements": [{"point": "CONFIDENTIAL-COACHING"}]}],
+    }))
+
+
+def test_progress_ignores_name_matches_from_meetings_the_employee_was_not_in(db_session):
+    # 'Ravi' in a colleague's meeting is not Ravi Kumar unless Ravi Kumar has that meeting too
+    other = MeetingRecord(owner_email="zed@cloudfuze.com", event_id="z-1", subject="DummyCustomer review",
+                          start_utc=datetime(2026, 9, 1, 10), join_url="https://teams.microsoft.com/z1")
+    db.session.add(other)
+    db.session.flush()
+    db.session.add(_named_analysis(other, "Ravi"))
+    db.session.commit()
+    assert meeting_insights.employee_progress("ravi@cloudfuze.com", "Ravi Kumar") is None
+
+
+def test_progress_ignores_entries_resolved_to_another_account(db_session):
+    other = MeetingRecord(owner_email="zed@cloudfuze.com", event_id="z-2", subject="Other",
+                          start_utc=datetime(2026, 9, 2, 10), join_url="https://teams.microsoft.com/z2")
+    db.session.add(other)
+    db.session.flush()
+    db.session.add(_named_analysis(other, "Ravi Kumar", email="ravi.teja@cloudfuze.com"))
+    db.session.commit()
+    assert meeting_insights.employee_progress("ravi@cloudfuze.com", "Ravi Kumar") is None
+
+
+def test_progress_keeps_name_matches_for_meetings_the_employee_attended(db_session):
+    start = datetime(2026, 9, 3, 10)
+    theirs = MeetingRecord(owner_email="zed@cloudfuze.com", event_id="z-3", subject="Shared call",
+                           start_utc=start, join_url="https://teams.microsoft.com/z3")
+    mine = MeetingRecord(owner_email="ravi@cloudfuze.com", event_id="r-3", subject="Shared call",
+                         start_utc=start, join_url="https://teams.microsoft.com/z3")
+    db.session.add_all([theirs, mine])
+    db.session.flush()
+    db.session.add(_named_analysis(theirs, "Ravi"))
+    db.session.commit()
+    progress = meeting_insights.employee_progress("ravi@cloudfuze.com", "Ravi Kumar")
+    assert progress is not None and progress["count"] == 1

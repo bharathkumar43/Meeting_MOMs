@@ -273,3 +273,27 @@ def test_meeting_page_shows_uploaded_transcript(app, client, signed_in, monkeypa
     assert resp.status_code == 200
     assert "Customer review" in html and "Hello there" in html and "Ana" in html
     assert n["count"] <= 12, n["count"]
+
+
+def test_send_email_failure_does_not_show_internal_error(app, client, signed_in, monkeypatch):
+    from app import routes
+
+    def boom(**kwargs):
+        raise RuntimeError("Graph 403 https://graph.microsoft.com/v1.0/me/sendMail INTERNAL-DETAIL")
+
+    monkeypatch.setattr(routes, "send_mom_email", boom)
+    with app.app_context():
+        _seed_people(1)
+    signed_in(client, "emp0@cloudfuze.com")
+    _build_mom(client)
+    html = client.post("/send-email", data={"to_email": "a@client.com", "format_choice": "docx"}
+                       ).get_data(as_text=True)
+    assert "Failed to send the email" in html and "INTERNAL-DETAIL" not in html
+
+
+def test_parse_file_error_does_not_show_internal_error(client, signed_in):
+    signed_in(client, "emp0@cloudfuze.com")
+    resp = client.post("/transcript/parse-file", data={"file": (io.BytesIO(b"not a zip"), "x.docx")},
+                       content_type="multipart/form-data")
+    body = resp.get_data(as_text=True)
+    assert resp.status_code == 400 and "zip" not in body.lower() and "Could not read this file" in body

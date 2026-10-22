@@ -1,3 +1,5 @@
+from html import escape
+
 from app.graph_client import GraphClient
 
 
@@ -25,18 +27,23 @@ def send_mom_email(access_token, to_emails, meeting_title, meeting_date, attachm
 
     subject = f"Minutes of Meeting - {meeting_title} ({meeting_date})"
 
+    # The body is HTML: the title comes from calendar invites (organizer-controlled) and the
+    # greeting/date from the send form, so all three are escaped before interpolation.
+    safe_title, safe_date, safe_greeting = (
+        escape(str(v or "")) for v in (meeting_title, meeting_date, greeting_name)
+    )
     body_html = f"""
     <div style="font-family: Calibri, sans-serif; color: #333;">
-        <p>Dear {greeting_name},</p>
+        <p>Dear {safe_greeting},</p>
         <p>Please find attached the Minutes of Meeting for the following session:</p>
         <table style="border-collapse: collapse; margin: 16px 0;">
             <tr>
                 <td style="padding: 8px 16px; font-weight: bold; background: #f0f4f8;">Meeting</td>
-                <td style="padding: 8px 16px; background: #f0f4f8;">{meeting_title}</td>
+                <td style="padding: 8px 16px; background: #f0f4f8;">{safe_title}</td>
             </tr>
             <tr>
                 <td style="padding: 8px 16px; font-weight: bold;">Date</td>
-                <td style="padding: 8px 16px;">{meeting_date}</td>
+                <td style="padding: 8px 16px;">{safe_date}</td>
             </tr>
         </table>
         <p>If you have any questions or need clarification on any points discussed,

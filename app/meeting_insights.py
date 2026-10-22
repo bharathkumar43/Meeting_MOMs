@@ -193,6 +193,19 @@ def employee_progress(email: str, name: str, limit: int = 12) -> dict | None:
         .order_by(MeetingRecord.start_utc.desc())
         .all()
     )
+    # Meetings this employee has their own calendar copy of: a display-name match only counts
+    # there, so a same-named colleague's meetings never leak into this employee's roll-up
+    attended = {(r.join_url or "", r.start_utc) for r in
+                MeetingRecord.query.filter_by(owner_email=email).with_entities(
+                    MeetingRecord.join_url, MeetingRecord.start_utc)} if email else set()
+
+    def is_me(entry: dict, rec: MeetingRecord) -> bool:
+        entry_email = (entry.get("email") or "").lower()
+        if entry_email:
+            return entry_email == email
+        in_meeting = rec.owner_email == email or ((rec.join_url or ""), rec.start_utc) in attended
+        return bool(name) and in_meeting and _same_person(entry.get("name", ""), name)
+
     seen: set[tuple[str, datetime]] = set()
     meetings = []
     for analysis, rec in rows:
@@ -203,9 +216,7 @@ def employee_progress(email: str, name: str, limit: int = 12) -> dict | None:
             data = json.loads(analysis.result_json)
         except ValueError:
             continue
-        me = next((e for e in data.get("employees", [])
-                   if (email and e.get("email") == email) or (name and _same_person(e.get("name", ""), name))),
-                  None)
+        me = next((e for e in data.get("employees", []) if is_me(e, rec)), None)
         if me is None:
             continue
         seen.add(key)
