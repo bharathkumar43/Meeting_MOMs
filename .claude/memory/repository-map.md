@@ -55,7 +55,7 @@ Use this before grepping the whole repo — it's usually faster to jump straight
 ## app/templates/
 - `base.html` — shared layout, extended by every page.
 - `login.html`, `dashboard.html`, `transcript.html`, `mom_builder.html`, `send.html` — Teams-source flow.
-- `zoom_dashboard.html` — Zoom-source dashboard.
+- `teams_meetings.html` (+ `_teams_rows.html`) — meetings list for both sources: `/meetings/teams` and `/zoom/dashboard` render it with `page_source` = teams / zoom.
 - `admin.html`, `admin_user_meetings.html` — admin views.
 
 ## app/static/

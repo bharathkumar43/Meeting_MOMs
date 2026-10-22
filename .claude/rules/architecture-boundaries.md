@@ -24,7 +24,7 @@ Adding a fourth source means adding a new `*_auth.py` + `*_client.py` pair that 
 - `activity_tracker.py` — the only module that writes audit rows (`MeetingAccess`, `MOMSent`, login tracking). Route handlers call into it rather than writing to `db.session` directly for these tables.
 
 ## Templates
-- Every page template extends `base.html`. Provider-specific dashboards (`dashboard.html` for Teams, `zoom_dashboard.html`) are separate templates by design — do not collapse them into one parameterized template unless the two sources' data shapes fully converge.
+- Every page template extends `base.html`. Teams and Zoom meetings now share one stored shape (`MeetingRecord` → `record_to_meeting`), so both lists render `teams_meetings.html` with `page_source`; `dashboard.html` is the personal overview. Keep source-specific differences as template parameters rather than forking the list template again.
 
 ## When a boundary needs to move
 If a task seems to require crossing one of these lines (new blueprint, model outside `models.py`, a `*_client.py` calling another provider), stop and invoke `.claude/agents/architect.md` first, or use gstack's `/plan-eng-review` for a broader design discussion. Do not silently work around a boundary.
