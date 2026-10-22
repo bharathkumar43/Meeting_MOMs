@@ -26,3 +26,10 @@ def test_env_template_has_no_real_credentials():
 def test_env_templates_are_excluded_from_the_docker_image():
     patterns = (ROOT / ".dockerignore").read_text(encoding="utf-8").split()
     assert ".env.*" in patterns
+
+
+def test_runtime_image_does_not_run_as_root():
+    stages = (ROOT / "Dockerfile").read_text(encoding="utf-8").split("\nFROM ")
+    runtime = stages[-1]
+    users = re.findall(r"^USER\s+(\S+)", runtime, re.MULTILINE)
+    assert users and users[-1] not in ("root", "0"), "runtime stage must switch to a non-root USER"

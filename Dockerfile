@@ -21,7 +21,11 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/*.whl && 
 
 COPY . .
 
-RUN mkdir -p /app/flask_session
+# Run as an unprivileged user that owns only the folders the app writes to
+RUN useradd --system --uid 10001 --create-home app && \
+    mkdir -p /app/flask_session /app/uploads && \
+    chown -R app:app /app/flask_session /app/uploads
+USER app
 
 EXPOSE 5100
 
