@@ -205,13 +205,21 @@ def employee_progress(email: str, name: str, limit: int = 12) -> dict | None:
              for level in ("satisfied", "neutral", "dissatisfied", "unclear")}
     escalations = [m for m in meetings if m["escalation"].get("is_escalation")]
 
+    # This employee's own copy of each recent meeting (links stay inside what they may view),
+    # found with one query instead of one per meeting
+    recent = meetings[:limit]
+    others = {m["record"].join_url for m in recent if m["record"].owner_email != email}
+    copies: dict[tuple[str, datetime], str] = {}
+    if others:
+        for mine in (MeetingRecord.query.filter(MeetingRecord.owner_email == email,
+                                                MeetingRecord.join_url.in_(others))
+                     .order_by(MeetingRecord.id)):
+            copies.setdefault((mine.join_url, mine.start_utc), mine.event_id)
+
     def own_event(rec: MeetingRecord) -> str | None:
-        """This employee's own copy of the meeting (links stay inside what they may view)."""
         if rec.owner_email == email:
             return rec.event_id
-        mine = MeetingRecord.query.filter_by(owner_email=email, join_url=rec.join_url,
-                                             start_utc=rec.start_utc).first()
-        return mine.event_id if mine else None
+        return copies.get((rec.join_url, rec.start_utc))
 
     return {
         "count": len(meetings),
@@ -226,7 +234,7 @@ def employee_progress(email: str, name: str, limit: int = 12) -> dict | None:
         "recent": [{"subject": m["record"].subject, "start": m["record"].start_utc,
                     "event_id": own_event(m["record"]), "rating": m["employee"].get("rating"),
                     "mood": m["mood"]}
-                   for m in reversed(meetings[:limit])],
+                   for m in reversed(recent)],
         "improvements": [{"subject": m["record"].subject, "point": p.get("point", "")}
                          for m in meetings for p in m["employee"].get("improvements", [])][:6],
         "strengths": [{"subject": m["record"].subject, "point": p.get("point", "")}
