@@ -55,3 +55,32 @@ def test_shared_analysis_is_found_from_another_attendees_record(db_session):
     shared = meeting_insights.shared_analysis(mine)
     assert shared is not None
     assert db.session.get(MeetingRecord, shared.meeting_record_id).event_id == "o-4"
+
+
+def _zoom_record(owner: str, event_id: str, media: dict | None = None) -> MeetingRecord:
+    return MeetingRecord(owner_email=owner, event_id=event_id, subject="Acme call",
+                         start_utc=datetime(2026, 10, 20, 10), join_url="https://zoom.us/j/81234567890",
+                         media_json=json.dumps(media) if media is not None else None)
+
+
+def test_zoom_analysis_is_not_shared_with_a_self_made_event(db_session):
+    # Anyone can put a Zoom link in their own calendar: same link + start is not attendance.
+    victim = _zoom_record("bob@cloudfuze.com", "z-bob",
+                          {"zoom_uuid": "u1", "bound_to": "bob@cloudfuze.com"})
+    forged = _zoom_record("eve@cloudfuze.com", "z-eve")
+    db.session.add_all([victim, forged])
+    db.session.flush()
+    db.session.add(_analysis(victim, 7, name="Bob", email="bob@cloudfuze.com"))
+    db.session.commit()
+    assert meeting_insights.shared_analysis(forged) is None
+
+
+def test_zoom_analysis_is_shared_between_verified_attendees(db_session):
+    a = _zoom_record("bob@cloudfuze.com", "z-bob", {"zoom_uuid": "u1", "bound_to": "bob@cloudfuze.com"})
+    b = _zoom_record(EMP, "z-ana", {"zoom_uuid": "u1", "bound_to": EMP})
+    db.session.add_all([a, b])
+    db.session.flush()
+    db.session.add(_analysis(a, 7, name="Bob", email="bob@cloudfuze.com"))
+    db.session.commit()
+    shared = meeting_insights.shared_analysis(b)
+    assert shared is not None and shared.meeting_record_id == a.id

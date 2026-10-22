@@ -146,12 +146,31 @@ def shared_analysis(rec: MeetingRecord) -> MeetingAnalysis | None:
     own = db.session.get(MeetingAnalysis, rec.id)
     if own is not None or not rec.join_url:
         return own
-    return (
+    same_meeting = (
         MeetingAnalysis.query.join(MeetingRecord)
         .filter(MeetingRecord.join_url == rec.join_url, MeetingRecord.start_utc == rec.start_utc)
         .order_by(MeetingAnalysis.created_at.desc())
-        .first()
     )
+    if "zoom.us" not in rec.join_url.lower():
+        return same_meeting.first()  # Teams join links are issued by Microsoft, not typed in
+    # A Zoom link is calendar text anyone can write: share only between records bound to the
+    # same Zoom recording, which is attached only to people who hosted or attended it.
+    mine = _zoom_binding(rec)
+    if mine is None:
+        return None
+    return next((row for row in same_meeting
+                 if _zoom_binding(db.session.get(MeetingRecord, row.meeting_record_id)) == mine), None)
+
+
+def _zoom_binding(rec: MeetingRecord | None) -> str | None:
+    """Zoom recording UUID this record was verified against (host or participant), if any."""
+    try:
+        media = json.loads(rec.media_json) if rec and rec.media_json else {}
+    except ValueError:
+        return None
+    if media.get("zoom_uuid") and media.get("bound_to") == (rec.owner_email or "").lower():
+        return media["zoom_uuid"]
+    return None
 
 
 # ── Employee progress (manager view) ─────────────────────────────────────────

@@ -365,7 +365,7 @@ def sync_zoom_hosted(owner_email: str, start: datetime, end: datetime) -> dict:
         if not external:
             _ZOOM_NOT_CUSTOMER.set(uuid, True)
             continue
-        media = _zoom_media_from_recording(rec)
+        media = {**_zoom_media_from_recording(rec), "bound_to": owner_email.lower()}  # their own recording
         db.session.add(MeetingRecord(
             owner_email=owner_email, event_id=event_id,
             subject=(rec.get("topic") or "Zoom meeting")[:500],
