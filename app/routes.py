@@ -1520,7 +1520,6 @@ def team():
         team_rows=rows,
         sync_states={r.owner_email: r for r in CalendarSync.query.filter(
             CalendarSync.owner_email.in_(team_emails)).all()} if team_emails else {},
-        user_roles={u["email"].lower(): roles.role_of(u["email"]) for u in rows},
     )
 
 
