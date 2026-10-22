@@ -4,13 +4,32 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from http.cookiejar import DefaultCookiePolicy
 from urllib.parse import quote, unquote
 import requests
+from requests.adapters import HTTPAdapter
 
 from app.ttl_cache import TTLCache
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _keep_alive_session() -> requests.Session:
+    """
+    One connection pool for every Graph call, so calls reuse open HTTPS connections instead
+    of a new TLS handshake each time. Like the one-shot _HTTP.get() it replaces, it keeps
+    no cookies between calls (cookies inside one call's redirect chain still apply).
+    """
+    session = requests.Session()
+    session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+    adapter = HTTPAdapter(pool_maxsize=32)  # request threads + parallel lookup workers
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_HTTP = _keep_alive_session()
 
 # (connect, read) timeout for every Graph call so a stalled request can't hang a worker
 _TIMEOUT = (5, 30)
@@ -75,7 +94,7 @@ class GraphClient:
 
     def get_user_profile(self):
         """Get the signed-in user's profile."""
-        resp = requests.get(f"{self.base_url}/me", headers=self.headers, timeout=_TIMEOUT)
+        resp = _HTTP.get(f"{self.base_url}/me", headers=self.headers, timeout=_TIMEOUT)
         resp.raise_for_status()
         return resp.json()
 
@@ -88,7 +107,7 @@ class GraphClient:
         events: list[dict] = []
         next_url, next_params = url, {**params, "$top": _CALENDAR_PAGE_SIZE}
         while next_url and len(events) < max_events:
-            resp = requests.get(next_url, headers=headers, params=next_params, timeout=_TIMEOUT)
+            resp = _HTTP.get(next_url, headers=headers, params=next_params, timeout=_TIMEOUT)
             resp.raise_for_status()
             body = resp.json()
             events.extend(body.get("value", []))
@@ -118,7 +137,7 @@ class GraphClient:
 
     def get_event(self, event_id):
         """Fetch a single calendar event directly by its ID."""
-        resp = requests.get(
+        resp = _HTTP.get(
             f"{self.base_url}/me/events/{event_id}",
             headers=self.headers,
             params={
@@ -136,7 +155,7 @@ class GraphClient:
         params = {
             "$filter": f"JoinWebUrl eq '{join_url}'",
         }
-        resp = requests.get(
+        resp = _HTTP.get(
             f"{self.base_url}/me/onlineMeetings",
             headers=self.headers,
             params=params,
@@ -158,7 +177,7 @@ class GraphClient:
         params = {
             "$filter": f"JoinWebUrl eq '{join_url}'",
         }
-        resp = requests.get(
+        resp = _HTTP.get(
             f"{self.base_url}/users/{user_id}/onlineMeetings",
             headers=self.headers,
             params=params,
@@ -179,7 +198,7 @@ class GraphClient:
             url = f"{self.base_url}/users/{user_id}/onlineMeetings/{meeting_id}/transcripts"
         else:
             url = f"{self.base_url}/me/onlineMeetings/{meeting_id}/transcripts"
-        resp = requests.get(url, headers=self.headers, timeout=_TIMEOUT)
+        resp = _HTTP.get(url, headers=self.headers, timeout=_TIMEOUT)
         if resp.status_code != 200:
             logger.warning("list_transcripts: %d - %s", resp.status_code, resp.text[:200])
             return []
@@ -194,7 +213,7 @@ class GraphClient:
         granted), so callers can tell "no recordings" apart from "couldn't check".
         """
         try:
-            resp = requests.get(
+            resp = _HTTP.get(
                 f"{self.base_url}/users/{quote(user_id, safe='')}/onlineMeetings/"
                 f"{quote(meeting_id, safe='')}/recordings",
                 headers=self.headers,
@@ -216,7 +235,7 @@ class GraphClient:
         if range_header:
             headers["Range"] = range_header
         try:
-            resp = requests.get(
+            resp = _HTTP.get(
                 f"{self.base_url}/users/{quote(user_id, safe='')}/onlineMeetings/"
                 f"{quote(meeting_id, safe='')}/recordings/{quote(recording_id, safe='')}/content",
                 headers=headers,
@@ -261,7 +280,7 @@ class GraphClient:
             url = f"{self.base_url}/users/{user_id}/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
         else:
             url = f"{self.base_url}/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
-        resp = requests.get(
+        resp = _HTTP.get(
             url, headers=headers, params={"$format": "text/vtt"}, timeout=_TIMEOUT
         )
         if resp.status_code != 200:
@@ -315,7 +334,7 @@ class GraphClient:
 
         payload = {"message": message, "saveToSentItems": "true"}
 
-        resp = requests.post(
+        resp = _HTTP.post(
             f"{self.base_url}/me/sendMail",
             headers=self.headers,
             json=payload,
@@ -358,7 +377,7 @@ class GraphClient:
 
         encoded_sender = quote(sender_mailbox.strip(), safe="")
         url = f"{self.base_url}/users/{encoded_sender}/sendMail"
-        resp = requests.post(url, headers=self.headers, json=payload, timeout=_TIMEOUT)
+        resp = _HTTP.post(url, headers=self.headers, json=payload, timeout=_TIMEOUT)
         if resp.status_code >= 400:
             logger.error(
                 "send_mail_as_user failed: %s %s",
@@ -372,7 +391,7 @@ class GraphClient:
 
     def get_user_id(self, user_email):
         """Resolve a user email to their Azure AD user ID."""
-        resp = requests.get(
+        resp = _HTTP.get(
             f"{self.base_url}/users/{user_email}",
             headers=self.headers,
             params={"$select": "id,displayName,userPrincipalName"},
@@ -418,7 +437,7 @@ class GraphClient:
             return cached
         for attempt in range(3):
             try:
-                resp = requests.get(
+                resp = _HTTP.get(
                     f"{self.base_url}/users/{user_id}/drive/root/search(q='Meeting Recording')",
                     headers=self.headers,
                     params={"$select": "id,name,createdDateTime", "$top": 200},
@@ -473,7 +492,7 @@ class GraphClient:
 
     def _resolve_user_id_uncached(self, email, deadline: float | None = None):
         try:
-            resp = requests.get(
+            resp = _HTTP.get(
                 f"{self.base_url}/users/{email}",
                 headers=self.headers,
                 params={"$select": "id"},
@@ -485,7 +504,7 @@ class GraphClient:
                     logger.info("Rate limited resolving %s, skipping (time budget)", email)
                     return None
                 time.sleep(wait)
-                resp = requests.get(
+                resp = _HTTP.get(
                     f"{self.base_url}/users/{email}",
                     headers=self.headers,
                     params={"$select": "id"},
@@ -622,7 +641,7 @@ class GraphClient:
         """
         for attempt in range(3):
             try:
-                resp = requests.get(
+                resp = _HTTP.get(
                     f"{self.base_url}/users/{user_id}/drive/root/search(q='Transcript')",
                     headers=self.headers,
                     params={"$select": "id,name,createdDateTime", "$top": 200},
@@ -679,14 +698,14 @@ class GraphClient:
         """
         base = f"{self.base_url}/users/{quote(user_id)}/onlineMeetings/{quote(meeting_id)}"
         try:
-            resp = requests.get(f"{base}/attendanceReports", headers=self.headers,
+            resp = _HTTP.get(f"{base}/attendanceReports", headers=self.headers,
                                 timeout=_TIMEOUT)
             if resp.status_code != 200:
                 logger.info("list_attendance: HTTP %d", resp.status_code)
                 return None
             reports = resp.json().get("value", [])
             for report in reports:
-                r = requests.get(f"{base}/attendanceReports/{quote(report['id'])}/attendanceRecords",
+                r = _HTTP.get(f"{base}/attendanceReports/{quote(report['id'])}/attendanceRecords",
                                  headers=self.headers, timeout=_TIMEOUT)
                 report["records"] = r.json().get("value", []) if r.status_code == 200 else None
             return reports
@@ -718,12 +737,12 @@ class GraphClient:
             return _CHANNEL_DRIVE_CACHE.get(alias.lower())
         drive_id = None
         try:
-            resp = requests.get(f"{self.base_url}/sites", headers=self.headers,
+            resp = _HTTP.get(f"{self.base_url}/sites", headers=self.headers,
                                 params={"search": alias}, timeout=_TIMEOUT)
             if resp.status_code == 200:
                 for site in resp.json().get("value", []):
                     if (site.get("webUrl") or "").rstrip("/").lower().endswith(f"/sites/{alias.lower()}"):
-                        d = requests.get(f"{self.base_url}/sites/{site['id']}/drive",
+                        d = _HTTP.get(f"{self.base_url}/sites/{site['id']}/drive",
                                          headers=self.headers, params={"$select": "id"},
                                          timeout=_TIMEOUT)
                         if d.status_code == 200:
@@ -743,7 +762,7 @@ class GraphClient:
         if not query:
             return []
         try:
-            resp = requests.get(
+            resp = _HTTP.get(
                 f"{self.base_url}/drives/{quote(drive_id)}/root/search(q='{quote(query)}')",
                 headers=self.headers, params={"$top": 50}, timeout=_TIMEOUT,
             )
@@ -761,7 +780,7 @@ class GraphClient:
     def _drive_item_info(self, path: str) -> dict | None:
         try:
             # No $select: Graph omits @microsoft.graph.downloadUrl when $select is used
-            resp = requests.get(f"{self.base_url}/{path}", headers=self.headers, timeout=_TIMEOUT)
+            resp = _HTTP.get(f"{self.base_url}/{path}", headers=self.headers, timeout=_TIMEOUT)
         except requests.RequestException as e:
             logger.warning("drive item lookup failed: %s", e)
             return None
@@ -783,7 +802,7 @@ class GraphClient:
         Uses /users/{user_id}/drive/items/{item_id}/content (follows redirects).
         """
         try:
-            resp = requests.get(
+            resp = _HTTP.get(
                 f"{self.base_url}/users/{user_id}/drive/items/{item_id}/content",
                 headers=self.headers,
                 timeout=30,
