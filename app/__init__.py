@@ -1,6 +1,7 @@
 import logging
 import os
 from flask import Flask
+from flask_compress import Compress
 from flask_session import Session
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
@@ -15,6 +16,7 @@ for _noisy in ("msal", "urllib3"):
 
 db = SQLAlchemy()
 migrate = Migrate()
+compress = Compress()
 
 
 def create_app():
@@ -35,6 +37,9 @@ def create_app():
     Session(app)
     db.init_app(app)
     migrate.init_app(app, db)
+    # gzip/brotli/zstd for HTML, CSS, JS and JSON (gunicorn has no proxy in front to do it);
+    # videos, documents and images are sent as is
+    compress.init_app(app)
 
     # Browsers cache static files for a year; the ?v=<mtime> added below changes
     # whenever a file changes, so edits still show up immediately.
