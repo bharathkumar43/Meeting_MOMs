@@ -1,12 +1,30 @@
 import logging
 from datetime import datetime, timedelta, timezone
+from http.cookiejar import DefaultCookiePolicy
 from urllib.parse import quote
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _keep_alive_session() -> requests.Session:
+    """
+    One connection pool for every Zoom call (no new TLS handshake per call). Like the one-shot
+    _HTTP.get() it replaces, it keeps no cookies between calls.
+    """
+    session = requests.Session()
+    session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+    adapter = HTTPAdapter(pool_maxsize=32)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_HTTP = _keep_alive_session()
 
 _MAX_PAGES = 3
 
@@ -36,7 +54,7 @@ class ZoomClient:
 
         for page in range(_MAX_PAGES):
             try:
-                resp = requests.get(url, headers=self.headers, params=params, timeout=15)
+                resp = _HTTP.get(url, headers=self.headers, params=params, timeout=15)
                 if resp.status_code == 404:
                     logger.info("Zoom user not found: %s", user_email)
                     break
@@ -67,7 +85,7 @@ class ZoomClient:
         results: list[dict] = []
         for _ in range(max_pages):
             try:
-                resp = requests.get(url, headers=self.headers, params=params, timeout=30)
+                resp = _HTTP.get(url, headers=self.headers, params=params, timeout=30)
             except requests.RequestException as e:
                 logger.warning("list_account_recordings failed: %s", e)
                 return None
@@ -85,7 +103,7 @@ class ZoomClient:
     def user_exists(self, user_email: str) -> bool:
         """True if the email is a user in the CloudFuze Zoom account."""
         try:
-            resp = requests.get(f"{self.base_url}/users/{quote(user_email, safe='@')}",
+            resp = _HTTP.get(f"{self.base_url}/users/{quote(user_email, safe='@')}",
                                 headers=self.headers, timeout=15)
         except requests.RequestException:
             return False
@@ -94,7 +112,7 @@ class ZoomClient:
     def list_past_instances(self, meeting_id: str) -> list[dict] | None:
         """Past occurrences ({uuid, start_time}) of a meeting ID. GET /past_meetings/{id}/instances"""
         try:
-            resp = requests.get(f"{self.base_url}/past_meetings/{quote(str(meeting_id))}/instances",
+            resp = _HTTP.get(f"{self.base_url}/past_meetings/{quote(str(meeting_id))}/instances",
                                 headers=self.headers, timeout=20)
         except requests.RequestException as e:
             logger.warning("list_past_instances failed: %s", e)
@@ -114,7 +132,7 @@ class ZoomClient:
         encoded = quote(quote(uuid, safe=""), safe="") if uuid.startswith("/") or "//" in uuid \
             else quote(uuid, safe="")
         try:
-            resp = requests.get(f"{self.base_url}/past_meetings/{encoded}/participants",
+            resp = _HTTP.get(f"{self.base_url}/past_meetings/{encoded}/participants",
                                 headers=self.headers, params={"page_size": 300}, timeout=20)
         except requests.RequestException as e:
             logger.warning("get_past_meeting_participants failed: %s", e)
@@ -130,7 +148,7 @@ class ZoomClient:
         if range_header:
             headers["Range"] = range_header
         try:
-            resp = requests.get(download_url, headers=headers, stream=True, allow_redirects=True,
+            resp = _HTTP.get(download_url, headers=headers, stream=True, allow_redirects=True,
                                 timeout=(5, 60))
         except requests.RequestException as e:
             logger.warning("open_file_stream failed: %s", e)
@@ -148,7 +166,7 @@ class ZoomClient:
         Returns the recording dict or None on failure.
         """
         try:
-            resp = requests.get(
+            resp = _HTTP.get(
                 f"{self.base_url}/meetings/{meeting_id}/recordings",
                 headers=self.headers,
                 timeout=15,
@@ -169,7 +187,7 @@ class ZoomClient:
         Returns the VTT text on success, None on failure.
         """
         try:
-            resp = requests.get(
+            resp = _HTTP.get(
                 download_url,
                 headers=self.headers,
                 allow_redirects=True,
@@ -191,7 +209,7 @@ class ZoomClient:
         GET /report/meetings/{meetingId}/participants
         Returns list of participant dicts. Raises on HTTP error.
         """
-        resp = requests.get(
+        resp = _HTTP.get(
             f"{self.base_url}/report/meetings/{meeting_id}/participants",
             headers=self.headers,
             params={"page_size": 100},
