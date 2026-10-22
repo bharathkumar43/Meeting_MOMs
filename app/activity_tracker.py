@@ -238,12 +238,29 @@ def get_sent_moms():
     )
 
 
-def get_all_user_dashboard_stats():
-    """All-time per-user stats for the admin overview dashboard."""
+def get_all_user_dashboard_stats(include_counts: bool = True):
+    """
+    All-time per-user stats for the admin overview dashboard.
+    include_counts=False skips the meetings/sent/pending aggregates (rows then have no such
+    keys) for tables that only show who the users are.
+    """
     manager_emails = {e.lower() for e in (Config.MANAGER_EMAILS or [])}
     users = User.query.order_by(User.last_login.desc()).all()
     if not users:
         return []
+
+    def base_row(u: User) -> dict:
+        return {
+            "name": u.name or "",
+            "email": u.email,
+            "is_manager": u.email.lower() in manager_emails,
+            "first_login": u.first_login,
+            "last_login": u.last_login,
+            "login_count": u.login_count,
+        }
+
+    if not include_counts:
+        return [base_row(u) for u in users]
 
     # Distinct (user_id, subject, meeting_date) accessed — all time
     access_subq = (
@@ -317,12 +334,7 @@ def get_all_user_dashboard_stats():
         sent = sent_counts.get(uid, 0)
         pending = pending_counts.get(uid, 0)
         rows.append({
-            "name": u.name or "",
-            "email": u.email,
-            "is_manager": u.email.lower() in manager_emails,
-            "first_login": u.first_login,
-            "last_login": u.last_login,
-            "login_count": u.login_count,
+            **base_row(u),
             "meetings": meetings_counts.get(uid, 0),
             "sent": sent,
             "pending": pending,

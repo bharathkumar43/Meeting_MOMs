@@ -1452,7 +1452,7 @@ def send_email():
 @main_bp.route("/admin")
 @admin_required
 def admin_dashboard():
-    user_dashboard_stats = get_all_user_dashboard_stats()
+    user_dashboard_stats = get_all_user_dashboard_stats(include_counts=False)
 
     return render_template(
         "admin.html",
@@ -1513,7 +1513,8 @@ def team():
     if roles.is_admin(me) and not roles.is_manager(me):
         return redirect(url_for("main.admin_dashboard"))
     team_emails = set(roles.team_of(me))
-    rows = [u for u in get_all_user_dashboard_stats() if u["email"].lower() in team_emails]
+    rows = [u for u in get_all_user_dashboard_stats(include_counts=False)
+            if u["email"].lower() in team_emails]
     return render_template(
         "team.html",
         team_rows=rows,
