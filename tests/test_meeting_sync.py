@@ -87,3 +87,26 @@ def test_for_occurrence_keeps_only_this_slot():
              {"id": "b", "createdDateTime": "2026-09-24T11:30:00Z"},
              {"id": "c", "createdDateTime": "2026-10-01T12:00:00Z"}]
     assert [i["id"] for i in meeting_sync.for_occurrence(items, meeting)] == ["c", "a"]
+
+
+def test_due_users_skips_recent_locked_and_non_org(db_session, count_queries):
+    from app.models import CalendarSync
+    now = datetime.utcnow()
+    db.session.add_all([
+        CalendarSync(owner_email="never@cloudfuze.com", last_error=""),
+        CalendarSync(owner_email="old@cloudfuze.com", last_synced_at=now - timedelta(hours=1), last_error=""),
+        CalendarSync(owner_email="fresh@cloudfuze.com", last_synced_at=now - timedelta(minutes=2), last_error=""),
+        CalendarSync(owner_email="busy@cloudfuze.com", last_synced_at=now - timedelta(hours=1),
+                     sync_started_at=now - timedelta(minutes=1), last_error=""),
+        CalendarSync(owner_email="stuck@cloudfuze.com", last_synced_at=now - timedelta(hours=1),
+                     sync_started_at=now - timedelta(hours=1), last_error=""),
+        CalendarSync(owner_email="guest@other.com", last_error=""),
+    ])
+    db.session.commit()
+    with count_queries() as n:
+        due = meeting_sync.due_users()
+    assert sorted(due) == ["never@cloudfuze.com", "old@cloudfuze.com", "stuck@cloudfuze.com"]
+    assert n["count"] == 1
+    assert sorted(meeting_sync.enrolled_users()) == sorted(
+        ["never@cloudfuze.com", "old@cloudfuze.com", "fresh@cloudfuze.com",
+         "busy@cloudfuze.com", "stuck@cloudfuze.com"])

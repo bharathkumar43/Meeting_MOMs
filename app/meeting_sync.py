@@ -948,8 +948,25 @@ def enrolled_users() -> list[str]:
     before that are never synced in the background until they sign in again.
     ACTIVE_USER_DAYS > 0 additionally skips enrolled users who haven't signed in that recently.
     """
+    return _enrolled(CalendarSync.query.all())
+
+
+def due_users() -> list[str]:
+    """
+    Enrolled users whose last sync is older than SYNC_INTERVAL and whom no one is syncing now,
+    in one query. The background loop only claims these (sync_user would skip the rest).
+    """
+    now = datetime.utcnow()
+    return _enrolled(CalendarSync.query.filter(
+        or_(CalendarSync.last_synced_at.is_(None), CalendarSync.last_synced_at < now - SYNC_INTERVAL),
+        or_(CalendarSync.sync_started_at.is_(None),
+            CalendarSync.sync_started_at < now - STALE_LOCK_AFTER),
+    ).all())
+
+
+def _enrolled(rows: list[CalendarSync]) -> list[str]:
     suffix = f"@{Config.ORG_DOMAIN}".lower()
-    emails = [row.owner_email for row in CalendarSync.query.all() if row.owner_email.endswith(suffix)]
+    emails = [row.owner_email for row in rows if row.owner_email.endswith(suffix)]
     if ACTIVE_USER_DAYS > 0 and emails:
         since = datetime.utcnow() - timedelta(days=ACTIVE_USER_DAYS)
         recent = {u.email.lower() for u in User.query.filter(User.last_login >= since).all()}
@@ -986,7 +1003,7 @@ def _loop(app) -> None:
     while True:
         try:
             with app.app_context():
-                for email in enrolled_users():
+                for email in due_users():
                     sync_user(email)
                 db.session.remove()
         except Exception:
