@@ -101,25 +101,7 @@ function Test-Prerequisites {
     }
     Write-Success "  [OK] .env file found"
 
-    # Refuse to deploy with template placeholders or empty secrets (values are never printed)
-    $required = @("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID", "FLASK_SECRET_KEY",
-                  "POSTGRES_PASSWORD", "OPENAI_API_KEY")
-    $values = @{}
-    foreach ($line in Get-Content ".env") {
-        if ($line -match '^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$') { $values[$Matches[1]] = $Matches[2].Trim('"', "'") }
-    }
-    $bad = @()
-    foreach ($name in $required) {
-        $v = $values[$name]
-        if (-not $v -or $v -match '(?i)your-|change|here|example|placeholder') { $bad += $name }
-    }
-    if ($values["FLASK_SECRET_KEY"] -and $values["FLASK_SECRET_KEY"].Length -lt 32) { $bad += "FLASK_SECRET_KEY (too short)" }
-    if ($bad.Count -gt 0) {
-        Write-Err "  .env still has empty or placeholder values: $($bad -join ', ')"
-        Write-Err "  Set real values (FLASK_SECRET_KEY: python -c `"import secrets; print(secrets.token_hex(32))`")"
-        exit 1
-    }
-    Write-Success "  [OK] .env secrets are set"
+    Test-EnvSecrets
 
     # Check port 5100 is free
     $portInUse = Get-NetTCPConnection -LocalPort 5100 -ErrorAction SilentlyContinue
@@ -131,6 +113,38 @@ function Test-Prerequisites {
 
     Write-Host ""
     Write-Success "All prerequisites met."
+}
+
+# Refuse to deploy with empty or template placeholder secrets (values are never printed).
+# Runs before every action that starts containers (up, restart, rebuild).
+function Test-EnvSecrets {
+    if (-not (Test-Path ".env")) {
+        Write-Err ".env file not found. Run '.\deploy.ps1 up' first."
+        exit 1
+    }
+    $required = @("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID", "FLASK_SECRET_KEY",
+                  "POSTGRES_PASSWORD", "OPENAI_API_KEY")
+    $values = @{}
+    foreach ($line in Get-Content ".env") {
+        # KEY=value, optional 'export ', optional trailing ' # comment'
+        if ($line -match '^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*?)\s*(?:\s#.*)?$') {
+            $values[$Matches[1]] = $Matches[2].Trim('"', "'")
+        }
+    }
+    # Template shapes only (your-..., ...-here, change-me/this, <...>), not ordinary words
+    $placeholder = '(?i)^(your[-_]|<)|change[-_]?(me|this)|placeholder|[-_]here$'
+    $bad = @()
+    foreach ($name in $required) {
+        $v = $values[$name]
+        if (-not $v -or $v -match $placeholder) { $bad += $name }
+    }
+    if ($values["FLASK_SECRET_KEY"] -and $values["FLASK_SECRET_KEY"].Length -lt 32) { $bad += "FLASK_SECRET_KEY (too short)" }
+    if ($bad.Count -gt 0) {
+        Write-Err "  .env still has empty or placeholder values: $($bad -join ', ')"
+        Write-Err "  Set real values (FLASK_SECRET_KEY: python -c `"import secrets; print(secrets.token_hex(32))`")"
+        exit 1
+    }
+    Write-Success "  [OK] .env secrets are set"
 }
 
 # ── Actions ──────────────────────────────────────────────────
@@ -160,6 +174,7 @@ switch ($Action) {
     }
 
     "restart" {
+        Test-EnvSecrets
         Write-Step "Restarting containers"
         docker compose down
         docker compose up -d --build
@@ -170,6 +185,7 @@ switch ($Action) {
     }
 
     "rebuild" {
+        Test-EnvSecrets
         Write-Step "Full rebuild (no cache)"
         docker compose down
         docker compose build --no-cache

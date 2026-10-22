@@ -64,3 +64,22 @@ def test_zoom_meeting_ids_are_encoded_in_api_paths(monkeypatch):
     with pytest.raises(RuntimeError):
         z.get_meeting_participants("../users/x")
     assert all("/users/x" not in u for u in seen), seen
+
+
+def test_admin_can_open_recording_without_host_email(client, signed_in, zoom, monkeypatch):
+    original = ZoomClient.get_meeting_recordings
+    monkeypatch.setattr(ZoomClient, "get_meeting_recordings",
+                        lambda self, mid: {**original(self, mid), "host_email": ""})
+    signed_in(client, "admin@cloudfuze.com")
+    assert client.get("/zoom/transcript?meeting_id=81234567890").status_code == 200
+
+
+def test_truncated_participant_list_is_unknown(monkeypatch):
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"participants": [{"user_email": "x@cloudfuze.com"}], "next_page_token": "more"}
+
+    monkeypatch.setattr("app.zoom_client._HTTP.get", lambda url, **kw: _Resp())
+    assert ZoomClient("t").get_past_meeting_participants("uuid-1") is None

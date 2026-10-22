@@ -83,3 +83,20 @@ def test_pdf_conversion_on_linux_uses_a_per_process_profile(monkeypatch):
     assert seen["cmd"][0] == "/usr/bin/soffice"
     assert seen["cmd"][1].startswith("-env:UserInstallation=file:")
     assert "--convert-to" in seen["cmd"]
+
+
+def test_mom_generation_errors_do_not_expose_internals(monkeypatch):
+    from app import mom_generator
+    from config import Config
+
+    class _Boom:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    raise RuntimeError("INTERNAL-DETAIL https://api.openai.com/v1 key=sk-test")
+
+    monkeypatch.setattr(Config, "OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(mom_generator, "_client", lambda: _Boom())
+    _, error = mom_generator.generate_mom_from_transcript("hello there", "Kickoff")
+    assert error and "INTERNAL-DETAIL" not in error and "sk-test" not in error

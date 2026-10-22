@@ -32,7 +32,7 @@ _MAX_PAGES = 3
 def _path_id(meeting_id) -> str:
     """A meeting ID or UUID as one URL path segment (Zoom wants '/'-UUIDs double-encoded)."""
     value = str(meeting_id or "")
-    once = quote(value, safe="")
+    once = quote(value, safe="").replace(".", "%2E")  # '.'/'..' must not become dot-segments
     return quote(once, safe="") if value.startswith("/") or "//" in value else once
 
 
@@ -150,9 +150,9 @@ class ZoomClient:
             data = resp.json()
             people.extend(data.get("participants", []))
             if not data.get("next_page_token"):
-                break
+                return people
             params = {"page_size": 300, "next_page_token": data["next_page_token"]}
-        return people
+        return None  # more pages than we read: unknown, not "did not attend"
 
     def open_file_stream(self, download_url: str, range_header: str | None = None):
         """Stream a recording file (Zoom redirects to a signed CDN URL; Range is forwarded)."""
@@ -219,16 +219,24 @@ class ZoomClient:
         """
         Fetch participant report for a past meeting.
         GET /report/meetings/{meetingId}/participants
-        Returns list of participant dicts. Raises on HTTP error.
+        Returns list of participant dicts (all pages, up to _MAX_PAGES). Raises on HTTP error.
         """
-        resp = _HTTP.get(
-            f"{self.base_url}/report/meetings/{_path_id(meeting_id)}/participants",
-            headers=self.headers,
-            params={"page_size": 100},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json().get("participants", [])
+        people: list[dict] = []
+        params = {"page_size": 300}
+        for _ in range(_MAX_PAGES):
+            resp = _HTTP.get(
+                f"{self.base_url}/report/meetings/{_path_id(meeting_id)}/participants",
+                headers=self.headers,
+                params=params,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            people.extend(data.get("participants", []))
+            if not data.get("next_page_token"):
+                break
+            params = {"page_size": 300, "next_page_token": data["next_page_token"]}
+        return people
 
     # ── Normalization ────────────────────────────────────────
 

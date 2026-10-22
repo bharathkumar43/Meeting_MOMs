@@ -297,3 +297,16 @@ def test_parse_file_error_does_not_show_internal_error(client, signed_in):
                        content_type="multipart/form-data")
     body = resp.get_data(as_text=True)
     assert resp.status_code == 400 and "zip" not in body.lower() and "Could not read this file" in body
+
+
+def test_parse_file_hides_unexpected_parser_errors(client, signed_in, monkeypatch):
+    from app import routes
+
+    def boom(raw):
+        raise RuntimeError("INTERNAL-DETAIL at C:/srv/app/parser.py")
+
+    monkeypatch.setattr(routes, "_text_from_uploaded_vtt", boom)
+    signed_in(client, "emp0@cloudfuze.com")
+    resp = client.post("/transcript/parse-file", data={"file": (io.BytesIO(b"WEBVTT"), "t.vtt")},
+                       content_type="multipart/form-data")
+    assert resp.status_code == 400 and "INTERNAL-DETAIL" not in resp.get_data(as_text=True)

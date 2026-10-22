@@ -138,7 +138,7 @@ class GraphClient:
     def get_event(self, event_id):
         """Fetch a single calendar event directly by its ID (encoded: one path segment only)."""
         resp = _HTTP.get(
-            f"{self.base_url}/me/events/{quote(event_id or '', safe='')}",
+            f"{self.base_url}/me/events/{quote(event_id or '', safe='').replace('.', '%2E')}",
             headers=self.headers,
             params={
                 "$select": "id,subject,start,end,attendees,onlineMeeting,organizer,isOnlineMeeting"
@@ -803,6 +803,7 @@ class GraphClient:
         Uses /users/{user_id}/drive/items/{item_id}/content (follows redirects).
         Returns None for a file larger than max_bytes (read in chunks, never all at once).
         """
+        resp = None
         try:
             resp = _HTTP.get(
                 f"{self.base_url}/users/{quote(user_id, safe='')}/drive/items/"
@@ -812,20 +813,23 @@ class GraphClient:
                 allow_redirects=True,
                 stream=True,
             )
-            if resp.status_code == 200:
-                data = bytearray()
-                for chunk in resp.iter_content(chunk_size=256 * 1024):
-                    data.extend(chunk)
-                    if max_bytes is not None and len(data) > max_bytes:
-                        resp.close()
-                        logger.warning("get_onedrive_file_content: item %s over %d bytes", item_id, max_bytes)
-                        return None
-                return bytes(data)
-            logger.warning(
-                "get_onedrive_file_content: HTTP %d for user=%s item=%s",
-                resp.status_code, user_id, item_id,
-            )
-            return None
+            if resp.status_code != 200:
+                logger.warning(
+                    "get_onedrive_file_content: HTTP %d for user=%s item=%s",
+                    resp.status_code, user_id, item_id,
+                )
+                return None
+            data = bytearray()
+            for chunk in resp.iter_content(chunk_size=256 * 1024):
+                data.extend(chunk)
+                if max_bytes is not None and len(data) > max_bytes:
+                    logger.warning("get_onedrive_file_content: item %s over %d bytes",
+                                   item_id, max_bytes)
+                    return None
+            return bytes(data)
         except Exception as e:
             logger.error("get_onedrive_file_content failed for %s/%s: %s", user_id, item_id, e)
             return None
+        finally:
+            if resp is not None:
+                resp.close()  # streamed: always release the connection

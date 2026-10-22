@@ -57,7 +57,7 @@ def test_get_event_encodes_the_id(monkeypatch):
 
     monkeypatch.setattr("app.graph_client._HTTP.get", _get)
     GraphClient("t").get_event("../../me?x=1#")
-    assert seen["url"].endswith("/me/events/..%2F..%2Fme%3Fx%3D1%23")
+    assert seen["url"].endswith("/me/events/%2E%2E%2F%2E%2E%2Fme%3Fx%3D1%23")
 
 
 class _Lookup:
@@ -96,3 +96,24 @@ def test_onedrive_search_ignores_spoofable_organizer_without_matching_link():
 ])
 def test_subject_match_requires_a_meaningful_overlap(file_subject, meeting_subject, expected):
     assert routes._subject_match(file_subject, meeting_subject) is expected
+
+
+def test_back_link_keeps_the_lists_own_absolute_url(client, signed_in, event):
+    # _teams_rows.html passes request.url (absolute, same host) from the Teams and Zoom lists
+    signed_in(client, OWNER)
+    back = "http://localhost/meetings/zoom?keyword=acme&start_date=2026-10-01"
+    html = client.get("/transcript", query_string={"event_id": "evt-1", "back": back}).get_data(as_text=True)
+    assert 'href="/meetings/zoom?keyword=acme&amp;start_date=2026-10-01"' in html
+
+
+@pytest.mark.parametrize("event_id", ["", ".", ".."])
+def test_empty_or_dot_event_ids_are_not_found(client, signed_in, monkeypatch, event_id):
+    monkeypatch.setattr(GraphClient, "get_event", lambda self, eid: {"value": []})
+    signed_in(client, OWNER)
+    resp = client.get("/transcript", query_string={"event_id": event_id})
+    assert resp.status_code == 302
+
+
+def test_zoom_dot_segment_ids_stay_one_segment(monkeypatch):
+    from app.zoom_client import _path_id
+    assert _path_id("..") == "%2E%2E" and _path_id(".") == "%2E"

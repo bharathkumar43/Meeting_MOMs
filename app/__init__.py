@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from urllib.parse import urlsplit
 from flask import Flask
 from flask_compress import Compress
 from flask_session import Session
@@ -25,9 +26,14 @@ def _weak_secret_key(key: str) -> bool:
     return len(key) < 32 or bool(re.search(r"change|your-|here|example|secret-key", key, re.I))
 
 
+def _is_local(redirect_uri: str) -> bool:
+    return (urlsplit(redirect_uri).hostname or "") in ("localhost", "127.0.0.1", "::1")
+
+
 def create_app():
-    # A real (https) deployment must not run with the default, a placeholder or a short key
-    if Config.REDIRECT_URI.lower().startswith("https://") and _weak_secret_key(Config.SECRET_KEY):
+    # A deployed app (any non-localhost REDIRECT_URI) must not run with the default,
+    # a placeholder or a short key
+    if not _is_local(Config.REDIRECT_URI) and _weak_secret_key(Config.SECRET_KEY):
         raise RuntimeError(
             "FLASK_SECRET_KEY is missing or weak. Set a long random value, e.g. "
             "python -c \"import secrets; print(secrets.token_hex(32))\""

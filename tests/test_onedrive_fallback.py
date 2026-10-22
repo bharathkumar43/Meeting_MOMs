@@ -32,7 +32,14 @@ def test_owner_and_link_organizer_files_are_bound():
     assert meeting_sync.find_recording(_meeting(), [_file("Acme quarterly review", OWNER_UID)],
                                        OWNER_UID)["user_id"] == OWNER_UID
     assert meeting_sync.find_recording(_meeting(), [_file("Acme quarterly review | Q4", ORG_OID)],
-                                       OWNER_UID)["user_id"] == ORG_OID
+                                       OWNER_UID, ORG_OID)["user_id"] == ORG_OID
+
+
+def test_link_oid_alone_is_not_trusted():
+    # A join link can be copied into an invite; the organizer must resolve to the same person
+    files = [_file("Acme quarterly review", ORG_OID)]
+    assert meeting_sync.find_recording(_meeting(), files, OWNER_UID) is None
+    assert meeting_sync.find_recording(_meeting(), files, OWNER_UID, "uid-someone-else") is None
 
 
 def test_short_or_empty_subject_does_not_match_everything():

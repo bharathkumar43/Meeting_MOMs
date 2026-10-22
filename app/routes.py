@@ -236,7 +236,6 @@ def index():
 
 
 @main_bp.route("/login")
-@limited("login", by_ip=True)
 def login():
     auth_url = get_auth_url()
     return redirect(auth_url)
@@ -561,7 +560,7 @@ def transcript():
         except Exception:
             meeting = None
 
-    if not meeting:
+    if not meeting or not isinstance(meeting, dict) or not meeting.get("id"):
         flash("Meeting not found.", "warning")
         return redirect(url_for("main.teams_meetings"))
 
@@ -833,11 +832,19 @@ def transcript():
 
 
 def _safe_back(value: str | None) -> str | None:
-    """A same-site path for the page's back link; anything else (scheme, //host, \\) is dropped."""
+    """
+    A same-site path for the page's back link. The meeting lists pass their own absolute URL
+    (request.url), which is reduced to path + query; other hosts, schemes, //host and \\ are dropped.
+    """
     value = (value or "").strip()
-    if not value.startswith("/") or value.startswith("//") or "\\" in value:
+    if "\\" in value:
         return None
-    if urlsplit(value).scheme or urlsplit(value).netloc:
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc:
+        if parts.scheme not in ("http", "https") or parts.netloc != request.host:
+            return None
+        value = parts.path + (f"?{parts.query}" if parts.query else "")
+    if not value.startswith("/") or value.startswith("//"):
         return None
     return value
 
@@ -1987,7 +1994,7 @@ def zoom_transcript():
 
     recording = zoom.get_meeting_recordings(meeting_id)
     if not recording:
-        flash("Could not retrieve Zoom meeting recording.", "warning")
+        flash("This Zoom meeting can't be opened.", "warning")
         return redirect(url_for("main.zoom_dashboard"))
 
     meeting = ZoomClient.normalize_recording(recording)
@@ -2002,8 +2009,10 @@ def zoom_transcript():
     me = _current_user_email()
     host = (recording.get("host_email") or "").strip().lower()
     attended = any((p.get("user_email") or "").strip().lower() == me for p in participants)
-    if not (me and (me == host or attended or roles.can_view(me, host))):
-        flash("You can only open Zoom meetings you hosted or attended.", "warning")
+    allowed = me == host or attended or roles.is_admin(me) or roles.can_view(me, host)
+    if not (me and allowed):
+        # Same message as "no recording", so the page doesn't reveal which meetings exist
+        flash("This Zoom meeting can't be opened.", "warning")
         return redirect(url_for("main.zoom_dashboard"))
 
     transcript_text = ""

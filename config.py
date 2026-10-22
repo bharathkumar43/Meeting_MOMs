@@ -74,7 +74,7 @@ class Config:
     RATE_LIMITS = {
         name: tuple(int(x) for x in os.getenv(f"RATE_LIMIT_{name.upper()}", default).split("/"))
         for name, default in {
-            "login": "30/600", "mom_builder": "20/3600", "analyze": "60/3600",
+            "mom_builder": "20/3600", "analyze": "60/3600",
             "send_email": "30/3600", "upload_video": "20/3600", "upload_transcript": "60/3600",
             "parse_file": "60/3600",
         }.items()

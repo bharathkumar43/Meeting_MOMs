@@ -159,3 +159,43 @@ def test_onedrive_transcript_download_is_capped(monkeypatch):
     monkeypatch.setattr("app.graph_client._HTTP.get", lambda url, **kw: _Resp())
     assert GraphClient("t").get_onedrive_file_content("u", "i", max_bytes=1024 * 1024) is None
     assert _Resp.closed
+
+
+def test_rate_limit_does_not_commit_the_requests_pending_work(app, monkeypatch):
+    monkeypatch.setitem(Config.RATE_LIMITS, "parse_file", (5, 3600))
+    with app.app_context():
+        rec = MeetingRecord(owner_email=ME, event_id="pending", subject="s",
+                            start_utc=datetime(2026, 10, 20, 10), first_seen_at=datetime(2026, 10, 1),
+                            updated_at=datetime(2026, 10, 1))
+        db.session.add(rec)
+        assert rate_limit.hit("parse_file", ME)
+        db.session.rollback()
+        assert MeetingRecord.query.filter_by(event_id="pending").first() is None
+
+
+def test_rate_limit_allows_requests_when_the_database_fails(app, monkeypatch):
+    class _Broken:
+        class engine:
+            @staticmethod
+            def begin():
+                raise RuntimeError("db down")
+
+    monkeypatch.setattr(rate_limit, "db", _Broken)
+    with app.app_context():
+        assert rate_limit.hit("parse_file", ME) is True
+
+
+def test_any_non_local_deployment_refuses_weak_secret_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(Config, "REDIRECT_URI", "http://10.0.0.5:5100/auth/callback")
+    monkeypatch.setattr(Config, "SECRET_KEY", "dev-secret-key-change-in-production")
+    monkeypatch.setattr(Config, "SQLALCHEMY_DATABASE_URI", f"sqlite:///{tmp_path / 'k.db'}")
+    from app import create_app
+    with pytest.raises(RuntimeError):
+        create_app()
+
+
+def test_sign_in_is_not_rate_limited_per_ip(client):
+    # Many employees share one office IP; Microsoft throttles the sign-in itself
+    from unittest.mock import patch
+    with patch("app.routes.get_auth_url", return_value="https://login.example/authorize"):
+        assert all(client.get("/login").status_code == 302 for _ in range(40))

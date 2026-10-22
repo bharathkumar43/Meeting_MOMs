@@ -1,5 +1,5 @@
 """
-Per-user request limits (per client IP for sign-in), shared by all workers through the
+Per-user request limits (by_ip=True keys on the client IP instead), shared by all workers through the
 database. Fixed windows: Config.RATE_LIMITS maps a limit name to (requests, seconds).
 """
 import logging
@@ -8,6 +8,7 @@ import time
 from functools import wraps
 
 from flask import Response, flash, jsonify, redirect, request, session, url_for
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app import db
@@ -21,37 +22,59 @@ _JSON_LIMITS = {"parse_file", "upload_video", "upload_transcript", "analyze"}  #
 
 
 def hit(name: str, who: str) -> bool:
-    """Count one request for `who` under limit `name`; False once the window's limit is used up."""
+    """
+    Count one request for `who` under limit `name`; False once the window's limit is used up.
+    One atomic UPDATE (no lost counts across workers), on its own connection so it never
+    commits the request's pending work. If the database errors, the request is allowed.
+    """
     limit, window = Config.RATE_LIMITS[name]
     now = int(time.time())
     window_start = now - now % window
     key = f"{name}:{(who or 'anonymous').lower()}"[:320]
-    for _ in range(2):  # a concurrent first insert for the same window wins once; retry as update
-        row = db.session.get(RateLimitCounter, (key, window_start))
-        if row is None:
-            row = RateLimitCounter(key=key, window_start=window_start, count=0)
-            db.session.add(row)
-        if row.count >= limit:
-            db.session.rollback()
-            return False
-        row.count += 1
-        try:
-            db.session.commit()
-            break
-        except IntegrityError:
-            db.session.rollback()
-    if random.random() < 0.01:
-        _prune(now)
-    return True
+    table = RateLimitCounter.__table__
+    try:
+        with db.engine.begin() as conn:
+            bumped = conn.execute(
+                update(table)
+                .where(table.c.key == key, table.c.window_start == window_start,
+                       table.c.count < limit)
+                .values(count=table.c.count + 1)
+            ).rowcount
+            if bumped:
+                allowed = True
+            elif conn.execute(select(table.c.count).where(
+                    table.c.key == key, table.c.window_start == window_start)).first():
+                allowed = False  # the row exists and is at the limit
+            else:
+                allowed = _insert_first(conn, table, key, window_start, limit)
+        if random.random() < 0.01:
+            _prune(now)
+        return allowed
+    except Exception:
+        logger.exception("Rate limit check failed for %s; allowing the request", name)
+        return True
+
+
+def _insert_first(conn, table, key: str, window_start: int, limit: int) -> bool:
+    """First request of a window; if another worker inserted it first, count via UPDATE."""
+    try:
+        with conn.begin_nested():
+            conn.execute(insert(table).values(key=key, window_start=window_start, count=1))
+        return True
+    except IntegrityError:
+        return bool(conn.execute(
+            update(table)
+            .where(table.c.key == key, table.c.window_start == window_start, table.c.count < limit)
+            .values(count=table.c.count + 1)
+        ).rowcount)
 
 
 def _prune(now: int) -> None:
+    table = RateLimitCounter.__table__
     try:
-        RateLimitCounter.query.filter(
-            RateLimitCounter.window_start < now - _PRUNE_AFTER_SECONDS).delete()
-        db.session.commit()
+        with db.engine.begin() as conn:
+            conn.execute(delete(table).where(table.c.window_start < now - _PRUNE_AFTER_SECONDS))
     except Exception:
-        db.session.rollback()
         logger.exception("Rate-limit pruning failed")
 
 

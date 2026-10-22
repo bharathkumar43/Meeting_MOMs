@@ -115,11 +115,13 @@ def normalize_subject(s: str) -> str:
 MIN_CONTAINED_SUBJECT = 8  # shorter subjects ("Sync") would be "contained" in most file names
 
 
-def find_recording(meeting: dict, all_recordings: list, owner_user_id: str = "") -> dict | None:
+def find_recording(meeting: dict, all_recordings: list, owner_user_id: str = "",
+                   organizer_user_id: str = "") -> dict | None:
     """
     Return the OneDrive file entry matching a calendar event (by date + subject), or None.
-    Only files in the owner's OneDrive or the OneDrive of the organizer named in the
-    meeting's Microsoft-issued join link qualify: the shared search pool spans several people.
+    Only files in the owner's OneDrive, or the organizer's when the caller verified that the
+    event's organizer and the join link's Oid are the same person, qualify: the shared
+    search pool spans several people.
     """
     if not all_recordings:
         return None
@@ -128,7 +130,9 @@ def find_recording(meeting: dict, all_recordings: list, owner_user_id: str = "")
         return None
     link_oid = GraphClient.organizer_id_from_join_url(
         (meeting.get("onlineMeeting") or {}).get("joinUrl", "") or "")
-    allowed = {u.lower() for u in (owner_user_id, link_oid) if u}
+    verified_organizer = organizer_user_id if (
+        organizer_user_id and link_oid and organizer_user_id.lower() == link_oid.lower()) else ""
+    allowed = {u.lower() for u in (owner_user_id, verified_organizer) if u}
     meeting_date = meeting_start[:10].replace("-", "")
     norm_subject = normalize_subject(meeting.get("subject", ""))
     if not norm_subject:
@@ -727,7 +731,10 @@ def check_media(app_client, records: list[MeetingRecord], owner_email: str,
 
     for rec, meeting, result in zip(records, meetings, results):
         if not result["recording"]:
-            found = find_recording(meeting, files, owner_user_id)
+            organizer = ((meeting.get("organizer") or {}).get("emailAddress") or {}).get("address", "")
+            organizer_uid = app_client._resolve_user_id_safe(organizer) if (
+                organizer and organizer.lower().endswith(f"@{Config.ORG_DOMAIN.lower()}")) else None
+            found = find_recording(meeting, files, owner_user_id, organizer_uid or "")
             if found and found.get("item_id"):
                 result["recording"] = {
                     "kind": "onedrive", "user_id": found["user_id"], "item_id": found["item_id"],
