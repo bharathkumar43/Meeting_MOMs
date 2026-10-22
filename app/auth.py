@@ -57,7 +57,7 @@ def process_auth_callback() -> dict | None:
     app = _build_msal_app(cache=cache)
     try:
         result = app.acquire_token_by_auth_code_flow(flow, request.args.to_dict())
-    except ValueError:  # state mismatch or malformed response
+    except (ValueError, RuntimeError):  # state/nonce mismatch or malformed response
         return None
     if "access_token" not in result:
         return None

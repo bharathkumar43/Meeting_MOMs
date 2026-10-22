@@ -514,6 +514,13 @@ def record_media(rec: MeetingRecord | None) -> dict | None:
         return None
 
 
+def zoom_media_unchecked(rec: MeetingRecord, media: dict | None) -> bool:
+    """Stored Zoom invite media saved before the host/participant check (never serve it)."""
+    return (media is not None and source_of_join_url(rec.join_url) == "zoom"
+            and not rec.event_id.startswith(ZOOM_HOSTED_PREFIX)
+            and media.get("bound_to") != (rec.owner_email or "").lower())
+
+
 def save_media(rec: MeetingRecord, media: dict) -> None:
     rec.has_transcript = bool(media.get("has_transcript"))
     rec.has_recording = bool(media.get("recording"))

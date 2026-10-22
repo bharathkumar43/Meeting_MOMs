@@ -114,3 +114,15 @@ def test_no_delegated_token_when_cache_has_no_matching_account(app, fake_msal):
         session["user"] = {"preferred_username": "c@cloudfuze.com"}
         session["home_account_id"] = "oid-c.tid"
         assert auth._get_token_uncached() is None
+
+
+def test_callback_with_bad_id_token_nonce_fails_cleanly(client, fake_msal, monkeypatch):
+    # msal raises RuntimeError when the id_token nonce does not match the stored flow
+    def _nonce_mismatch(self, flow, auth_response):
+        raise RuntimeError("nonce mismatch")
+    monkeypatch.setattr(FakeMsalApp, "acquire_token_by_auth_code_flow", _nonce_mismatch)
+    client.get("/login")
+    resp = client.get("/auth/callback?code=c1&state=state-1")
+    assert resp.status_code == 302 and resp.headers["Location"].endswith("/login-page")
+    with client.session_transaction() as sess:
+        assert "user" not in sess

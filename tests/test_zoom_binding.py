@@ -94,3 +94,21 @@ def test_stored_media_from_before_the_check_is_looked_up_again(app, db_session, 
     media, text, _ = _zoom_media_and_transcript(rec, _meeting())
     assert media["recording"] is None and text == ""
     assert json.loads(rec.media_json)["recording"] is None
+
+
+def test_player_never_serves_unchecked_stored_zoom_media(app, db_session):
+    # Even if the re-check did not run, stored media without bound_to is not played.
+    rec = MeetingRecord(owner_email=OWNER, event_id="evt-z2", subject="Customer call",
+                        start_utc=datetime(2026, 10, 20, 10), end_utc=datetime(2026, 10, 20, 11),
+                        join_url=f"https://zoom.us/j/{MID}", has_transcript=True, has_recording=True,
+                        media_json=json.dumps(meeting_sync._zoom_media_from_recording(
+                            _recording("bob@cloudfuze.com"))),
+                        first_seen_at=datetime(2026, 10, 1), updated_at=datetime(2026, 10, 1))
+    db.session.add(rec)
+    db.session.commit()
+    from app.routes import _recording_for_meeting
+    with app.test_request_context("/"):
+        from flask import session
+        session["user"] = {"preferred_username": OWNER}
+        assert _recording_for_meeting({"id": "evt-z2"}, app_client=None) is None
+        assert "evt-z2" not in session.get("recording_map", {})
