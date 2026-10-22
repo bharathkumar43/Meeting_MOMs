@@ -136,9 +136,9 @@ class GraphClient:
         return [e for e in events if e.get("isOnlineMeeting")]
 
     def get_event(self, event_id):
-        """Fetch a single calendar event directly by its ID."""
+        """Fetch a single calendar event directly by its ID (encoded: one path segment only)."""
         resp = _HTTP.get(
-            f"{self.base_url}/me/events/{event_id}",
+            f"{self.base_url}/me/events/{quote(event_id or '', safe='')}",
             headers=self.headers,
             params={
                 "$select": "id,subject,start,end,attendees,onlineMeeting,organizer,isOnlineMeeting"

@@ -5,6 +5,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from functools import wraps
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -508,7 +509,7 @@ def teams_meetings_sync():
 def transcript():
     event_id = request.args.get("event_id", "")
     join_url = request.args.get("join_url", "")
-    back_url = request.args.get("back") or url_for("main.teams_meetings")
+    back_url = _safe_back(request.args.get("back")) or url_for("main.teams_meetings")
 
     token = get_token()
     client = GraphClient(token)
@@ -545,10 +546,10 @@ def transcript():
         meeting.get("organizer", {}).get("emailAddress", {}).get("address", "")
     )
 
-    # Use the join URL from the calendar event directly (avoids URL encoding issues)
-    meeting_join_url = (
-        meeting.get("onlineMeeting", {}).get("joinUrl", "")
-    )
+    # Use the join URL from the calendar event directly (avoids URL encoding issues).
+    # The join_url query parameter is caller-supplied: it may help the user's own delegated
+    # lookup (Step 1) but never chooses whose data the app token reads (Steps 0, 2, 3).
+    meeting_join_url = (meeting.get("onlineMeeting") or {}).get("joinUrl", "") or ""
     effective_join_url = meeting_join_url or join_url
 
     logger.info(
@@ -576,7 +577,7 @@ def transcript():
             db.session.rollback()
             logger.exception("Zoom media lookup failed for %s", meeting.get("subject", ""))
         tried_app_lookup = True
-    if cached_media is None and effective_join_url:
+    if cached_media is None and meeting_join_url:
         # One shared lookup (owner, onlineMeeting, transcript, recording) for this page
         app_token0 = get_app_token()
         if app_token0:
@@ -647,7 +648,7 @@ def transcript():
     # Step 2: If delegated didn't work, try app token (Step 0 already tried the same users)
     if not transcript_text and not skip_lookups and not tried_app_lookup:
         app_token = get_app_token()
-        if app_token and effective_join_url:
+        if app_token and meeting_join_url:
             app_client = GraphClient(app_token)
 
             user_data = session.get("user", {})
@@ -655,7 +656,7 @@ def transcript():
                 user_data.get("preferred_username") or user_data.get("upn") or ""
             )
             targets = []
-            link_oid = GraphClient.organizer_id_from_join_url(effective_join_url)
+            link_oid = GraphClient.organizer_id_from_join_url(meeting_join_url)
             if link_oid:
                 targets.append(("join-link organizer", link_oid))
             if organizer_email:
@@ -679,7 +680,7 @@ def transcript():
                     tried_uids.add(uid)
                     logger.info("Step 2: Trying via %s (%s)", label, target)
                     online_meeting = app_client.get_online_meeting_for_user(
-                        uid, effective_join_url
+                        uid, meeting_join_url
                     )
                     if not online_meeting:
                         logger.info("Step 2: No meeting found via %s", label)
@@ -716,29 +717,13 @@ def transcript():
             )
             meeting_subject = meeting.get("subject", "")
 
-            user_s3 = session.get("user", {})
-            signed_in_s3 = (
-                user_s3.get("preferred_username") or user_s3.get("upn") or ""
+            step3_targets = _onedrive_transcript_targets(
+                step3_client, meeting, _current_user_email()
             )
-            step3_targets = []
-            if organizer_email:
-                step3_targets.append(organizer_email)
-            if signed_in_s3 and signed_in_s3.lower() != (organizer_email or "").lower():
-                step3_targets.append(signed_in_s3)
-
-            step3_oid = GraphClient.organizer_id_from_join_url(effective_join_url)
-            if step3_oid:
-                step3_targets.insert(0, step3_oid)
-
-            for target_email in step3_targets:
+            for uid in step3_targets:
                 if transcript_text:
                     break
-                uid = target_email if target_email == step3_oid else (
-                    step3_client._resolve_user_id_safe(target_email)
-                )
-                if not uid:
-                    logger.info("Step 3: Cannot resolve user %s", target_email)
-                    continue
+                target_email = uid  # kept for the log lines below
                 logger.info("Step 3: Searching OneDrive transcripts for %s", target_email)
                 found_files = step3_client._search_user_transcripts(uid, step3_deadline)
                 for tr in found_files:
@@ -808,6 +793,37 @@ def transcript():
         can_analyze=record is not None and bool(transcript_text or transcript_lines),
         analysis=_analysis_of(record),
     )
+
+
+def _safe_back(value: str | None) -> str | None:
+    """A same-site path for the page's back link; anything else (scheme, //host, \\) is dropped."""
+    value = (value or "").strip()
+    if not value.startswith("/") or value.startswith("//") or "\\" in value:
+        return None
+    if urlsplit(value).scheme or urlsplit(value).netloc:
+        return None
+    return value
+
+
+def _onedrive_transcript_targets(app_client, meeting: dict, signed_in_email: str) -> list[str]:
+    """
+    User IDs whose OneDrive may be searched for this meeting's transcript file: the
+    signed-in user, plus the organizer only when the Microsoft-issued join link names that
+    same person (an invite's organizer address alone can be spoofed).
+    """
+    targets: list[str] = []
+    me = app_client._resolve_user_id_safe(signed_in_email) if signed_in_email else None
+    if me:
+        targets.append(me)
+    organizer = ((meeting.get("organizer") or {}).get("emailAddress") or {}).get("address", "")
+    link_oid = GraphClient.organizer_id_from_join_url(
+        (meeting.get("onlineMeeting") or {}).get("joinUrl", "") or ""
+    )
+    if organizer and link_oid and organizer.lower().endswith(f"@{Config.ORG_DOMAIN.lower()}"):
+        org_uid = app_client._resolve_user_id_safe(organizer)
+        if org_uid and org_uid.lower() == link_oid.lower() and org_uid not in targets:
+            targets.append(org_uid)
+    return targets
 
 
 def _recording_for_meeting(meeting, app_client) -> dict | None:
@@ -1999,13 +2015,16 @@ def _subject_match(file_subject: str, meeting_subject: str) -> bool:
     b = _norm(meeting_subject)
     if not a or not b:
         return False
-    if a == b or a in b or b in a:
+    if a == b:
+        return True
+    # A very short subject ("a", "Sync") is contained in almost any file name that day
+    if min(len(a), len(b)) >= 8 and (a in b or b in a):
         return True
     words_a = set(a.split())
     words_b = set(b.split())
     common = words_a & words_b
     shorter = min(len(words_a), len(words_b))
-    return shorter > 0 and len(common) / shorter >= 0.6
+    return shorter >= 3 and len(common) / shorter >= 0.6
 
 
 def _decode_bytes(raw: bytes) -> str:
