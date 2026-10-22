@@ -421,7 +421,8 @@ def teams_meetings_older():
             reached = state.synced_from if state and state.synced_from else datetime.utcnow()
             oldest = datetime.utcnow() - timedelta(days=meeting_sync.BACKFILL_DAYS)
             until = max(reached - timedelta(days=meeting_sync.BACKFILL_CHUNK_DAYS), oldest)
-            meeting_sync.ensure_backfill(email, until)
+            if not meeting_sync.ensure_backfill(email, until):
+                break  # nothing fetched (no app token / user not found): don't spin forever
             state = meeting_sync.get_sync_state(email)
             rows = _attendance_filter(_teams_query(email, keyword, source=source), attendance).offset(offset).limit(_TEAMS_PAGE_SIZE + 1).all()
     except Exception:

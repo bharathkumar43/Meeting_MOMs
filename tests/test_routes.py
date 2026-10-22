@@ -192,3 +192,21 @@ def test_download_without_document_redirects(app, client, signed_in):
     signed_in(client, "emp0@cloudfuze.com")
     resp = client.get("/download-mom")
     assert resp.status_code == 302
+
+
+def test_load_older_stops_when_backfill_cannot_fetch(app, client, signed_in, monkeypatch):
+    from app import meeting_sync
+    monkeypatch.setattr(meeting_sync, "BACKFILL_ENABLED", True)
+    calls = []
+    monkeypatch.setattr(meeting_sync, "ensure_backfill", lambda email, until: calls.append(until) or False)
+    with app.app_context():
+        _seed_people(1)
+        db.session.add(CalendarSync(owner_email="emp1@cloudfuze.com", last_error="",
+                                    last_synced_at=datetime.utcnow(),
+                                    synced_from=datetime.utcnow() - timedelta(days=30)))
+        db.session.commit()
+    signed_in(client, "emp1@cloudfuze.com")
+    resp = client.get("/meetings/teams/older?offset=0")
+    assert resp.status_code == 200
+    assert resp.get_json()["data"]["count"] == 0
+    assert len(calls) == 1
