@@ -220,3 +220,25 @@ def test_send_page_tolerates_broken_attendees_field(app, client, signed_in):
                                       "attendees_json": "{not json", "title": "S"})
     assert resp.status_code == 200
     assert "Dear <span id=\"greetingPreview\" class=\"fw-semibold\">Customer</span>" in resp.get_data(as_text=True)
+
+
+def test_built_mom_is_kept_out_of_the_session(app, client, signed_in, tmp_path):
+    with app.app_context():
+        _seed_people(1)
+    signed_in(client, "emp0@cloudfuze.com")
+    _build_mom(client)
+    _build_mom(client)  # rebuilding replaces the previous file
+    sessions = [p for p in (tmp_path / "sessions").iterdir() if p.is_file()]
+    assert max(p.stat().st_size for p in sessions) < 10_000
+    assert len(list((tmp_path / "uploads" / "generated").glob("*.docx"))) == 1
+    assert client.get("/download-mom").data[:2] == b"PK"
+
+
+def test_session_from_before_the_file_store_still_downloads(app, client, signed_in):
+    from app.doc_generator import generate_mom_document
+    raw = generate_mom_document("Old", "2026-10-01", "", [], [], [])
+    signed_in(client, "emp0@cloudfuze.com")
+    with client.session_transaction() as sess:
+        sess["mom_doc"] = {"bytes_hex": raw.hex(), "meeting_subject": "Old",
+                           "meeting_date": "2026-10-01", "meeting_time": "", "attendees": []}
+    assert client.get("/download-mom").data == raw

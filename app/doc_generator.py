@@ -2,10 +2,13 @@ import io
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
+import time
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -15,6 +18,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 
 from app.timefmt import TZ_NAME, local_today
+from config import Config
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # Pre-rendered 4x PNG of the SVG logo: no native Cairo library needed (Windows has none)
@@ -244,6 +248,49 @@ def generate_mom_document(
     doc.save(buffer)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+# ── Generated MOM files between the Send page, Download and Send email ──────
+# Kept on disk (private upload folder) instead of the session, so the session file stays
+# small. One file per build; the previous one is replaced, and stale files are pruned.
+GENERATED_DOC_MAX_AGE_SECONDS = 2 * 24 * 3600
+_DOC_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def _generated_dir() -> Path:
+    path = Path(Config.UPLOAD_DIR) / "generated"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _generated_path(doc_id: str | None) -> Path | None:
+    if not doc_id or not _DOC_ID.fullmatch(doc_id):
+        return None
+    return _generated_dir() / f"{doc_id}.docx"
+
+
+def store_generated_doc(data: bytes, replaces: str | None = None) -> str:
+    """Save a generated MOM and return its ID; deletes the one it replaces and stale ones."""
+    folder = _generated_dir()
+    cutoff = time.time() - GENERATED_DOC_MAX_AGE_SECONDS
+    old = _generated_path(replaces)
+    for path in folder.glob("*.docx"):
+        try:
+            if path == old or path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            pass
+    doc_id = uuid.uuid4().hex
+    _generated_path(doc_id).write_bytes(data)
+    return doc_id
+
+
+def load_generated_doc(doc_id: str | None) -> bytes | None:
+    path = _generated_path(doc_id)
+    try:
+        return path.read_bytes() if path else None
+    except OSError:
+        return None
 
 
 # LibreOffice refuses to run two conversions on one user profile at the same time (the second

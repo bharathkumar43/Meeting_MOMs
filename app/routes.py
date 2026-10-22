@@ -31,7 +31,9 @@ from app.meeting_filter import (
 
     parse_vtt_transcript, transcript_to_readable, transcript_view_lines,
 )
-from app.doc_generator import generate_mom_document, convert_docx_to_pdf
+from app.doc_generator import (
+    convert_docx_to_pdf, generate_mom_document, load_generated_doc, store_generated_doc,
+)
 from app.email_sender import send_mom_email
 from app.mom_generator import SKILLS, analyze_meeting_conversation, generate_mom_from_transcript
 from app.activity_tracker import (
@@ -1292,8 +1294,9 @@ def send_page():
 
     has_default_cc = bool(Config.MOM_DEFAULT_DL_EMAIL or Config.MOM_DEFAULT_CC_EMAIL)
 
+    previous = (session.get("mom_doc") or {}).get("doc_id")
     session["mom_doc"] = {
-        "bytes_hex": doc_bytes.hex(),
+        "doc_id": store_generated_doc(doc_bytes, replaces=previous),
         "meeting_subject": title,
         "meeting_date": meeting_date,
         "meeting_time": meeting_time,
@@ -1317,17 +1320,26 @@ def send_page():
     )
 
 
+def _mom_doc_bytes(mom_data: dict | None) -> bytes | None:
+    """Bytes of the MOM built on the Send page (sessions from before the file store hold hex)."""
+    if not mom_data:
+        return None
+    if mom_data.get("bytes_hex"):
+        return bytes.fromhex(mom_data["bytes_hex"])
+    return load_generated_doc(mom_data.get("doc_id"))
+
+
 # ── Download MOM ─────────────────────────────────────────────
 
 @main_bp.route("/download-mom")
 @login_required
 def download_mom():
     mom_data = session.get("mom_doc")
-    if not mom_data:
+    doc_bytes = _mom_doc_bytes(mom_data)
+    if doc_bytes is None:
         flash("No document available to download. Please generate a MOM first.", "warning")
         return redirect(url_for("main.dashboard"))
 
-    doc_bytes = bytes.fromhex(mom_data["bytes_hex"])
     safe_title = "".join(
         c if c.isalnum() or c in " -_" else "_"
         for c in mom_data["meeting_subject"]
@@ -1368,7 +1380,8 @@ def _send_form_again(mom_data: dict, to_email: str, cc_emails: str, greeting_nam
 @login_required
 def send_email():
     mom_data = session.get("mom_doc")
-    if not mom_data:
+    doc_bytes = _mom_doc_bytes(mom_data)
+    if doc_bytes is None:
         flash("No document available. Please generate a MOM first.", "warning")
         return redirect(url_for("main.dashboard"))
 
@@ -1395,7 +1408,6 @@ def send_email():
 
     try:
         token = get_token()
-        doc_bytes = bytes.fromhex(mom_data["bytes_hex"])
 
         safe_title = "".join(
             c if c.isalnum() or c in " -_" else "_"
