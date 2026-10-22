@@ -242,3 +242,34 @@ def test_session_from_before_the_file_store_still_downloads(app, client, signed_
         sess["mom_doc"] = {"bytes_hex": raw.hex(), "meeting_subject": "Old",
                            "meeting_date": "2026-10-01", "meeting_time": "", "attendees": []}
     assert client.get("/download-mom").data == raw
+
+
+def test_meeting_page_shows_uploaded_transcript(app, client, signed_in, monkeypatch, count_queries):
+    from app import routes
+    from app.models import MeetingUpload
+    start = datetime(2026, 10, 1, 10, 0)
+    event = {"id": "evt-9", "subject": "Customer review",
+             "start": {"dateTime": "2026-10-01T10:00:00.0000000"},
+             "end": {"dateTime": "2026-10-01T11:00:00.0000000"},
+             "organizer": {"emailAddress": {"name": "Org", "address": "emp0@cloudfuze.com"}},
+             "attendees": [{"emailAddress": {"name": "Client", "address": "c@client.com"}}],
+             "onlineMeeting": {"joinUrl": ""}}
+    monkeypatch.setattr(routes.GraphClient, "get_event", lambda self, event_id: dict(event))
+    with app.app_context():
+        _seed_people(1)
+        rec = MeetingRecord(owner_email="emp0@cloudfuze.com", event_id="evt-9", subject="Customer review",
+                            start_utc=start, end_utc=start + timedelta(hours=1),
+                            join_url="https://teams.microsoft.com/l/x", has_transcript=False)
+        db.session.add(rec)
+        db.session.flush()
+        db.session.add(MeetingUpload(meeting_record_id=rec.id, kind="transcript", original_name="t.vtt",
+                                     transcript_text="WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Ana>Hello there</v>\n",
+                                     transcript_format="vtt", uploaded_by="emp0@cloudfuze.com"))
+        db.session.commit()
+    signed_in(client, "emp0@cloudfuze.com")
+    with count_queries() as n:
+        resp = client.get("/transcript?event_id=evt-9")
+    html = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert "Customer review" in html and "Hello there" in html and "Ana" in html
+    assert n["count"] <= 12, n["count"]
