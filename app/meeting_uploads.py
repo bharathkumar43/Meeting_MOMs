@@ -82,14 +82,19 @@ def save_video(record: MeetingRecord, file_storage, uploaded_by: str) -> Meeting
             os.remove(dest)
         raise
 
-    _delete_existing(record, "video")
+    replaced_files = _delete_existing(record, "video")
     upload = MeetingUpload(
         meeting_record_id=record.id, kind="video", original_name=original[:255],
         stored_name=stored_name, content_type=_VIDEO_TYPES[ext], size_bytes=size,
         uploaded_by=uploaded_by,
     )
     db.session.add(upload)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        _remove_files([dest])  # the new file has no row; the old one is still in place
+        raise
+    _remove_files(replaced_files)
     logger.info("Video uploaded for record %s by %s (%d bytes)", record.id, uploaded_by, size)
     return upload
 
@@ -99,7 +104,7 @@ def save_transcript(record: MeetingRecord, original_name: str, fmt: str, text: s
     """Store an uploaded transcript (raw text; VTT keeps its timestamps)."""
     if not (text or "").strip():
         raise UploadError("No text could be read from this file.")
-    _delete_existing(record, "transcript")
+    replaced_files = _delete_existing(record, "transcript")
     upload = MeetingUpload(
         meeting_record_id=record.id, kind="transcript",
         original_name=os.path.basename(original_name or "")[:255],
@@ -108,6 +113,7 @@ def save_transcript(record: MeetingRecord, original_name: str, fmt: str, text: s
     )
     db.session.add(upload)
     db.session.commit()
+    _remove_files(replaced_files)
     logger.info("Transcript uploaded for record %s by %s (%s)", record.id, uploaded_by, fmt)
     return upload
 
@@ -122,13 +128,24 @@ def latest(record: MeetingRecord | None, kind: str) -> MeetingUpload | None:
     )
 
 
-def _delete_existing(record: MeetingRecord, kind: str) -> None:
-    """Replace semantics: one uploaded video and one uploaded transcript per meeting."""
+def _delete_existing(record: MeetingRecord, kind: str) -> list[str]:
+    """
+    Replace semantics: one uploaded video and one uploaded transcript per meeting. Returns the
+    files of the replaced rows; callers delete them only after the commit succeeds, so a failed
+    commit never leaves a row pointing at a removed file.
+    """
+    files = []
     for old in MeetingUpload.query.filter_by(meeting_record_id=record.id, kind=kind).all():
         if old.stored_name:
-            try:
-                os.remove(video_path(old))
-            except OSError:
-                pass
+            files.append(video_path(old))
         db.session.delete(old)
     db.session.flush()
+    return files
+
+
+def _remove_files(paths: list[str]) -> None:
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
