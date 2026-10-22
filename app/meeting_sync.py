@@ -213,15 +213,27 @@ def _zoom_recordings_between(zoom, start: datetime, end: datetime) -> list[dict]
     return found
 
 
-def lookup_zoom_media(zoom, meeting: dict) -> dict:
+def _zoom_recording_belongs_to(zoom, rec: dict, owner_email: str) -> bool | None:
+    """True if the owner hosted or attended this recording; None if Zoom couldn't say."""
+    if (rec.get("host_email") or "").strip().lower() == owner_email:
+        return True
+    people = zoom.get_past_meeting_participants(rec.get("uuid") or "")
+    if people is None:
+        return None
+    return any((p.get("user_email") or "").strip().lower() == owner_email for p in people)
+
+
+def lookup_zoom_media(zoom, meeting: dict, owner_email: str) -> dict:
     """
     Video + transcript for a Zoom invite: the account recording with the invite's meeting ID
     that started during this calendar slot. Personal meeting rooms reuse one ID for many
-    meetings, so the time match (not the ID alone) decides.
+    meetings, so the time match (not the ID alone) decides. The join link comes from calendar
+    text anyone can write, so a recording is only attached if the owner hosted or attended it.
     """
+    owner_email = (owner_email or "").strip().lower()
     result = {
         "source": "zoom", "has_transcript": False, "recording": None,
-        "transcript_url": None, "recording_api_ok": False,
+        "transcript_url": None, "recording_api_ok": False, "bound_to": owner_email,
     }
     mid = zoom_meeting_id((meeting.get("onlineMeeting") or {}).get("joinUrl", ""))
     start = _parse_graph_dt((meeting.get("start") or {}).get("dateTime", ""))
@@ -246,7 +258,15 @@ def lookup_zoom_media(zoom, meeting: dict) -> dict:
     candidates.sort(key=lambda c: (
         not any(f.get("file_type") == "TRANSCRIPT" for f in c[1].get("recording_files", [])), c[0]
     ))
-    return {**result, **_zoom_media_from_recording(candidates[0][1])}
+    undecided = False
+    for _, rec in candidates:
+        belongs = _zoom_recording_belongs_to(zoom, rec, owner_email)
+        if belongs:
+            return {**result, **_zoom_media_from_recording(rec)}
+        undecided = undecided or belongs is None
+    if undecided:
+        result["recording_api_ok"] = False  # participants unknown: look again later
+    return result
 
 
 def _zoom_media_from_recording(rec: dict) -> dict:
@@ -641,7 +661,7 @@ def check_media(app_client, records: list[MeetingRecord], owner_email: str,
     if zoom_records:
         zoom = zoom_client_or_none()
         for rec in zoom_records:
-            save_media(rec, lookup_zoom_media(zoom, record_to_meeting(rec)))
+            save_media(rec, lookup_zoom_media(zoom, record_to_meeting(rec), rec.owner_email))
         db.session.commit()
         records = [r for r in records if source_of_join_url(r.join_url) != "zoom"]
         if not records:

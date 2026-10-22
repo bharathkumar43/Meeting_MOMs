@@ -1879,8 +1879,12 @@ def _zoom_media_and_transcript(rec, meeting: dict) -> tuple[dict, str, list]:
     """Zoom invite -> (media, transcript_text, transcript_lines) from the CloudFuze Zoom account."""
     media = record_media(rec) if rec.has_transcript is not None else None
     zoom = meeting_sync.zoom_client_or_none()
-    if media is None or not media.get("recording_api_ok"):
-        media = meeting_sync.lookup_zoom_media(zoom, meeting)
+    # Media stored before the ownership check (no bound_to) is looked up again once
+    unbound = (media is not None
+               and not rec.event_id.startswith(meeting_sync.ZOOM_HOSTED_PREFIX)
+               and media.get("bound_to") != (rec.owner_email or "").lower())
+    if media is None or not media.get("recording_api_ok") or unbound:
+        media = meeting_sync.lookup_zoom_media(zoom, meeting, rec.owner_email)
         meeting_sync.save_media(rec, media)
         db.session.commit()
     text, lines = "", []
