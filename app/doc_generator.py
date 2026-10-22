@@ -2,8 +2,11 @@ import io
 import logging
 import os
 import platform
+import shutil
 import subprocess
 import tempfile
+import threading
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 from docx import Document
@@ -243,6 +246,12 @@ def generate_mom_document(
     return buffer.getvalue()
 
 
+# LibreOffice refuses to run two conversions on one user profile at the same time (the second
+# exits without output). Each worker process gets its own profile and converts one at a time.
+_SOFFICE_LOCK = threading.Lock()
+_SOFFICE_PROFILE = Path(tempfile.gettempdir()) / f"mom-libreoffice-profile-{os.getpid()}"
+
+
 def convert_docx_to_pdf(doc_bytes: bytes) -> bytes:
     """
     Convert a DOCX byte string to PDF.
@@ -272,12 +281,14 @@ def convert_docx_to_pdf(doc_bytes: bytes) -> bytes:
                 raise RuntimeError(
                     "LibreOffice is not installed. Run: apt-get install -y libreoffice"
                 )
-            result = subprocess.run(
-                [libreoffice, "--headless", "--convert-to", "pdf", "--outdir", tmp_dir, docx_path],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+            with _SOFFICE_LOCK:
+                result = subprocess.run(
+                    [libreoffice, f"-env:UserInstallation={_SOFFICE_PROFILE.as_uri()}",
+                     "--headless", "--convert-to", "pdf", "--outdir", tmp_dir, docx_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
             if result.returncode != 0:
                 logger.error("LibreOffice conversion failed: %s", result.stderr)
                 raise RuntimeError(f"PDF conversion failed: {result.stderr}")
@@ -291,8 +302,4 @@ def convert_docx_to_pdf(doc_bytes: bytes) -> bytes:
 
 def _find_libreoffice() -> str | None:
     """Return the LibreOffice executable path, or None if not found."""
-    for candidate in ("libreoffice", "soffice"):
-        result = subprocess.run(["which", candidate], capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    return None
+    return shutil.which("libreoffice") or shutil.which("soffice")

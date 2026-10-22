@@ -62,3 +62,22 @@ def test_vtt_parsing_round_trip():
     assert transcript_to_readable(entries) == "\nAna:\n  Hello\n\nBo:\n  Hi?"
     lines = transcript_view_lines(entries)
     assert [line["clock"] for line in lines] == ["0:01", "1:02:03"]
+
+
+def test_pdf_conversion_on_linux_uses_a_per_process_profile(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        out_dir = cmd[cmd.index("--outdir") + 1]
+        with open(f"{out_dir}/mom.pdf", "wb") as f:
+            f.write(b"%PDF-1.4 fake")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(doc_generator.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(doc_generator.shutil, "which", lambda name: "/usr/bin/soffice" if name == "soffice" else None)
+    monkeypatch.setattr(doc_generator.subprocess, "run", fake_run)
+    assert doc_generator.convert_docx_to_pdf(b"PK fake docx") == b"%PDF-1.4 fake"
+    assert seen["cmd"][0] == "/usr/bin/soffice"
+    assert seen["cmd"][1].startswith("-env:UserInstallation=file:")
+    assert "--convert-to" in seen["cmd"]
