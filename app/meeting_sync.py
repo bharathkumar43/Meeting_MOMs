@@ -112,20 +112,35 @@ def normalize_subject(s: str) -> str:
     return s
 
 
-def find_recording(meeting: dict, all_recordings: list) -> dict | None:
-    """Return the OneDrive file entry matching a calendar event (by date + subject), or None."""
+MIN_CONTAINED_SUBJECT = 8  # shorter subjects ("Sync") would be "contained" in most file names
+
+
+def find_recording(meeting: dict, all_recordings: list, owner_user_id: str = "") -> dict | None:
+    """
+    Return the OneDrive file entry matching a calendar event (by date + subject), or None.
+    Only files in the owner's OneDrive or the OneDrive of the organizer named in the
+    meeting's Microsoft-issued join link qualify: the shared search pool spans several people.
+    """
     if not all_recordings:
         return None
     meeting_start = meeting.get("start", {}).get("dateTime", "")
     if not meeting_start:
         return None
+    link_oid = GraphClient.organizer_id_from_join_url(
+        (meeting.get("onlineMeeting") or {}).get("joinUrl", "") or "")
+    allowed = {u.lower() for u in (owner_user_id, link_oid) if u}
     meeting_date = meeting_start[:10].replace("-", "")
     norm_subject = normalize_subject(meeting.get("subject", ""))
+    if not norm_subject:
+        return None
     for rec in all_recordings:
-        if rec["date"] != meeting_date:
+        if rec["date"] != meeting_date or (rec.get("user_id") or "").lower() not in allowed:
             continue
         norm_rec = normalize_subject(rec["subject"])
-        if norm_rec == norm_subject or norm_rec in norm_subject or norm_subject in norm_rec:
+        if norm_rec == norm_subject or (
+            min(len(norm_rec), len(norm_subject)) >= MIN_CONTAINED_SUBJECT
+            and (norm_rec in norm_subject or norm_subject in norm_rec)
+        ):
             return rec
     return None
 
@@ -213,12 +228,20 @@ def _zoom_recordings_between(zoom, start: datetime, end: datetime) -> list[dict]
     return found
 
 
+_ZOOM_PARTICIPANTS = TTLCache(ttl_seconds=600)  # recording uuid -> participants (or _UNKNOWN)
+_UNKNOWN = "unknown"
+
+
 def _zoom_recording_belongs_to(zoom, rec: dict, owner_email: str) -> bool | None:
     """True if the owner hosted or attended this recording; None if Zoom couldn't say."""
     if (rec.get("host_email") or "").strip().lower() == owner_email:
         return True
-    people = zoom.get_past_meeting_participants(rec.get("uuid") or "")
-    if people is None:
+    uuid = rec.get("uuid") or ""
+    people = _ZOOM_PARTICIPANTS.get(uuid)
+    if people is None:  # cached for 10 minutes either way, so page views don't hammer Zoom
+        people = zoom.get_past_meeting_participants(uuid)
+        _ZOOM_PARTICIPANTS.set(uuid, _UNKNOWN if people is None else people)
+    if people is None or people == _UNKNOWN:
         return None
     return any((p.get("user_email") or "").strip().lower() == owner_email for p in people)
 
@@ -704,7 +727,7 @@ def check_media(app_client, records: list[MeetingRecord], owner_email: str,
 
     for rec, meeting, result in zip(records, meetings, results):
         if not result["recording"]:
-            found = find_recording(meeting, files)
+            found = find_recording(meeting, files, owner_user_id)
             if found and found.get("item_id"):
                 result["recording"] = {
                     "kind": "onedrive", "user_id": found["user_id"], "item_id": found["item_id"],

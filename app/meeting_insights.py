@@ -158,8 +158,11 @@ def shared_analysis(rec: MeetingRecord) -> MeetingAnalysis | None:
     mine = _zoom_binding(rec)
     if mine is None:
         return None
-    return next((row for row in same_meeting
-                 if _zoom_binding(db.session.get(MeetingRecord, row.meeting_record_id)) == mine), None)
+    rows = same_meeting.all()
+    records = {r.id: r for r in MeetingRecord.query.filter(
+        MeetingRecord.id.in_([row.meeting_record_id for row in rows]))} if rows else {}
+    return next((row for row in rows
+                 if _zoom_binding(records.get(row.meeting_record_id)) == mine), None)
 
 
 def _zoom_binding(rec: MeetingRecord | None) -> str | None:
@@ -168,7 +171,7 @@ def _zoom_binding(rec: MeetingRecord | None) -> str | None:
         media = json.loads(rec.media_json) if rec and rec.media_json else {}
     except ValueError:
         return None
-    if media.get("zoom_uuid") and media.get("bound_to") == (rec.owner_email or "").lower():
+    if isinstance(media, dict) and media.get("zoom_uuid") and media.get("bound_to") == (rec.owner_email or "").lower():
         return media["zoom_uuid"]
     return None
 

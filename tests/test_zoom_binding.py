@@ -51,6 +51,7 @@ class FakeZoom:
 @pytest.fixture(autouse=True)
 def _fresh_index():
     meeting_sync._ZOOM_INDEX._data.clear()  # account recordings are cached per month window
+    meeting_sync._ZOOM_PARTICIPANTS._data.clear()
     yield
 
 
@@ -112,3 +113,17 @@ def test_player_never_serves_unchecked_stored_zoom_media(app, db_session):
         session["user"] = {"preferred_username": OWNER}
         assert _recording_for_meeting({"id": "evt-z2"}, app_client=None) is None
         assert "evt-z2" not in session.get("recording_map", {})
+
+
+def test_participant_lookups_are_cached_per_recording(db_session):
+    calls = {"n": 0}
+
+    class CountingZoom(FakeZoom):
+        def get_past_meeting_participants(self, uuid):
+            calls["n"] += 1
+            return None  # Zoom can't say: must not be asked again on every page view
+
+    zoom = CountingZoom("bob@cloudfuze.com", None)
+    meeting_sync.lookup_zoom_media(zoom, _meeting(), OWNER)
+    meeting_sync.lookup_zoom_media(zoom, _meeting(), OWNER)
+    assert calls["n"] == 1

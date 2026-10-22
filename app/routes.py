@@ -1946,6 +1946,20 @@ def zoom_transcript():
 
     meeting = ZoomClient.normalize_recording(recording)
 
+    # The account-wide Zoom token can read any meeting: show it only to the host, a
+    # participant, or staff allowed to see the host's meetings.
+    try:
+        participants = zoom.get_meeting_participants(meeting_id)
+    except Exception as e:
+        logger.debug("Zoom participant lookup failed for transcript view %s: %s", meeting_id, e)
+        participants = []
+    me = _current_user_email()
+    host = (recording.get("host_email") or "").strip().lower()
+    attended = any((p.get("user_email") or "").strip().lower() == me for p in participants)
+    if not (me and (me == host or attended or roles.can_view(me, host))):
+        flash("You can only open Zoom meetings you hosted or attended.", "warning")
+        return redirect(url_for("main.zoom_dashboard"))
+
     transcript_text = ""
 
     transcript_lines = []
@@ -1962,18 +1976,14 @@ def zoom_transcript():
 
     attendees = []
     external_attendees = []
-    try:
-        participants = zoom.get_meeting_participants(meeting_id)
-        org_domain = Config.ORG_DOMAIN.lower()
-        for p in participants:
-            email = (p.get("user_email") or "").strip()
-            name = (p.get("name") or p.get("user_name") or "").strip()
-            if email:
-                attendees.append({"name": name, "email": email})
-                if not email.lower().endswith(f"@{org_domain}"):
-                    external_attendees.append({"name": name, "email": email})
-    except Exception as e:
-        logger.debug("Zoom participant lookup failed for transcript view %s: %s", meeting_id, e)
+    org_domain = Config.ORG_DOMAIN.lower()
+    for p in participants:
+        email = (p.get("user_email") or "").strip()
+        name = (p.get("name") or p.get("user_name") or "").strip()
+        if email:
+            attendees.append({"name": name, "email": email})
+            if not email.lower().endswith(f"@{org_domain}"):
+                external_attendees.append({"name": name, "email": email})
 
     meeting["attendees"] = attendees
     meeting["external_attendees"] = external_attendees

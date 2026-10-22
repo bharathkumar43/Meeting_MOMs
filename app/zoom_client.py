@@ -29,6 +29,13 @@ _HTTP = _keep_alive_session()
 _MAX_PAGES = 3
 
 
+def _path_id(meeting_id) -> str:
+    """A meeting ID or UUID as one URL path segment (Zoom wants '/'-UUIDs double-encoded)."""
+    value = str(meeting_id or "")
+    once = quote(value, safe="")
+    return quote(once, safe="") if value.startswith("/") or "//" in value else once
+
+
 class ZoomClient:
     """Wrapper around the Zoom REST API v2 for recordings, transcripts, and participants."""
 
@@ -128,19 +135,24 @@ class ZoomClient:
         GET /past_meetings/{uuid}/participants — needs meeting:read:list_past_participants:admin.
         UUIDs starting with '/' or containing '//' must be double URL-encoded.
         """
-        uuid = meeting_uuid or ""
-        encoded = quote(quote(uuid, safe=""), safe="") if uuid.startswith("/") or "//" in uuid \
-            else quote(uuid, safe="")
-        try:
-            resp = _HTTP.get(f"{self.base_url}/past_meetings/{encoded}/participants",
-                                headers=self.headers, params={"page_size": 300}, timeout=20)
-        except requests.RequestException as e:
-            logger.warning("get_past_meeting_participants failed: %s", e)
-            return None
-        if resp.status_code != 200:
-            logger.info("get_past_meeting_participants: %d %s", resp.status_code, resp.text[:150])
-            return None
-        return resp.json().get("participants", [])
+        people: list[dict] = []
+        params = {"page_size": 300}
+        for _ in range(_MAX_PAGES):  # large meetings span several pages
+            try:
+                resp = _HTTP.get(f"{self.base_url}/past_meetings/{_path_id(meeting_uuid)}/participants",
+                                 headers=self.headers, params=params, timeout=20)
+            except requests.RequestException as e:
+                logger.warning("get_past_meeting_participants failed: %s", e)
+                return None
+            if resp.status_code != 200:
+                logger.info("get_past_meeting_participants: %d %s", resp.status_code, resp.text[:150])
+                return None
+            data = resp.json()
+            people.extend(data.get("participants", []))
+            if not data.get("next_page_token"):
+                break
+            params = {"page_size": 300, "next_page_token": data["next_page_token"]}
+        return people
 
     def open_file_stream(self, download_url: str, range_header: str | None = None):
         """Stream a recording file (Zoom redirects to a signed CDN URL; Range is forwarded)."""
@@ -167,7 +179,7 @@ class ZoomClient:
         """
         try:
             resp = _HTTP.get(
-                f"{self.base_url}/meetings/{meeting_id}/recordings",
+                f"{self.base_url}/meetings/{_path_id(meeting_id)}/recordings",
                 headers=self.headers,
                 timeout=15,
             )
@@ -210,7 +222,7 @@ class ZoomClient:
         Returns list of participant dicts. Raises on HTTP error.
         """
         resp = _HTTP.get(
-            f"{self.base_url}/report/meetings/{meeting_id}/participants",
+            f"{self.base_url}/report/meetings/{_path_id(meeting_id)}/participants",
             headers=self.headers,
             params={"page_size": 100},
             timeout=15,
