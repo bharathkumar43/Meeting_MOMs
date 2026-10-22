@@ -796,20 +796,31 @@ class GraphClient:
             "download_url": data.get("@microsoft.graph.downloadUrl", ""),
         }
 
-    def get_onedrive_file_content(self, user_id: str, item_id: str) -> bytes | None:
+    def get_onedrive_file_content(self, user_id: str, item_id: str,
+                                  max_bytes: int | None = None) -> bytes | None:
         """
         Download raw bytes of an OneDrive file by item ID using the app token.
         Uses /users/{user_id}/drive/items/{item_id}/content (follows redirects).
+        Returns None for a file larger than max_bytes (read in chunks, never all at once).
         """
         try:
             resp = _HTTP.get(
-                f"{self.base_url}/users/{user_id}/drive/items/{item_id}/content",
+                f"{self.base_url}/users/{quote(user_id, safe='')}/drive/items/"
+                f"{quote(item_id, safe='')}/content",
                 headers=self.headers,
                 timeout=30,
                 allow_redirects=True,
+                stream=True,
             )
             if resp.status_code == 200:
-                return resp.content
+                data = bytearray()
+                for chunk in resp.iter_content(chunk_size=256 * 1024):
+                    data.extend(chunk)
+                    if max_bytes is not None and len(data) > max_bytes:
+                        resp.close()
+                        logger.warning("get_onedrive_file_content: item %s over %d bytes", item_id, max_bytes)
+                        return None
+                return bytes(data)
             logger.warning(
                 "get_onedrive_file_content: HTTP %d for user=%s item=%s",
                 resp.status_code, user_id, item_id,

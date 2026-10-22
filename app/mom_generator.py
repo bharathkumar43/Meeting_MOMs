@@ -34,6 +34,9 @@ def generate_mom_from_transcript(transcript: str, meeting_subject: str = "") -> 
     """
     if not transcript or not transcript.strip():
         return _empty(), "Transcript is empty — nothing to generate from."
+    if len(transcript) > Config.MOM_TRANSCRIPT_MAX_CHARS:
+        return _empty(), (f"Transcript is too long for one MOM (max "
+                          f"{Config.MOM_TRANSCRIPT_MAX_CHARS:,} characters). Trim it and try again.")
 
     if not Config.OPENAI_API_KEY or Config.OPENAI_API_KEY.startswith("your-"):
         return _empty(), "OPENAI_API_KEY is not configured in .env"

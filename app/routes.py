@@ -14,7 +14,9 @@ from flask import (
     request, session, flash, send_file, jsonify, Response, stream_with_context, current_app,
 )
 import io
+import zipfile
 from docx import Document
+from sqlalchemy import text as sql_text
 from werkzeug.utils import secure_filename
 
 from app.auth import get_auth_url, process_auth_callback, get_token, get_app_token, logout as auth_logout
@@ -27,6 +29,7 @@ from app.meeting_sync import (
 )
 from app.models import CalendarSync, MeetingAnalysis, MeetingRecord, MeetingUpload, User
 from app.zoom_auth import get_zoom_access_token
+from app.rate_limit import limited
 from app.zoom_client import ZoomClient
 from app.meeting_filter import (
 
@@ -114,6 +117,25 @@ def favicon():
     return Response(status=204)
 
 
+@main_bp.route("/healthz")
+def healthz():
+    """Unauthenticated liveness/readiness probe: app up and database reachable. Nothing else."""
+    try:
+        db.session.execute(sql_text("SELECT 1"))
+    except Exception:
+        db.session.rollback()
+        logger.exception("Health check: database unreachable")
+        return jsonify({"status": "error"}), 503
+    return jsonify({"status": "ok"}), 200
+
+
+@main_bp.before_request
+def _limit_request_size():
+    """Only the video upload may send a video-sized body; every other route gets a small cap."""
+    if request.endpoint != "main.upload_meeting_video":
+        request.max_content_length = Config.REQUEST_MAX_BYTES
+
+
 TRANSCRIPT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 ALLOWED_TRANSCRIPT_SUFFIXES = {".txt", ".vtt", ".docx"}
 
@@ -135,7 +157,19 @@ def _text_from_uploaded_vtt(raw: bytes) -> str:
     return text.strip()
 
 
+def _check_docx_size(raw: bytes) -> None:
+    """A .docx is a zip: refuse one whose parts expand beyond the limit (zip bomb)."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            expanded = sum(info.file_size for info in z.infolist())
+    except zipfile.BadZipFile as e:
+        raise ValueError("Not a valid .docx file.") from e
+    if expanded > Config.DOCX_MAX_EXPANDED_BYTES:
+        raise ValueError("This .docx expands to more than the allowed size.")
+
+
 def _text_from_uploaded_docx(raw: bytes) -> str:
+    _check_docx_size(raw)
     doc = Document(io.BytesIO(raw))
     parts = []
     for p in doc.paragraphs:
@@ -202,6 +236,7 @@ def index():
 
 
 @main_bp.route("/login")
+@limited("login", by_ip=True)
 def login():
     auth_url = get_auth_url()
     return redirect(auth_url)
@@ -735,7 +770,8 @@ def transcript():
                         "Step 3: Matched '%s' (%s), downloading item %s",
                         tr["subject"], tr["ext"], tr["item_id"],
                     )
-                    raw = step3_client.get_onedrive_file_content(uid, tr["item_id"])
+                    raw = step3_client.get_onedrive_file_content(
+                        uid, tr["item_id"], max_bytes=TRANSCRIPT_UPLOAD_MAX_BYTES)
                     if not raw:
                         continue
                     if tr["ext"] == "vtt":
@@ -745,6 +781,7 @@ def transcript():
                         transcript_lines = transcript_view_lines(entries)
                     elif tr["ext"] == "docx":
                         try:
+                            _check_docx_size(raw)
                             doc = Document(io.BytesIO(raw))
                             transcript_text = "\n".join(
                                 p.text for p in doc.paragraphs if p.text.strip()
@@ -975,6 +1012,7 @@ def _upload_record_for_request():
 
 @main_bp.route("/meetings/upload/video", methods=["POST"])
 @login_required
+@limited("upload_video")
 def upload_meeting_video():
     """Drag-and-drop / browse upload of a meeting video (owner or admin)."""
     if request.method != "POST":
@@ -998,6 +1036,7 @@ def upload_meeting_video():
 
 @main_bp.route("/meetings/upload/transcript", methods=["POST"])
 @login_required
+@limited("upload_transcript")
 def upload_meeting_transcript():
     """Upload and keep a transcript (.vtt keeps timestamps; .txt / .docx as text)."""
     if request.method != "POST":
@@ -1096,6 +1135,7 @@ def _analysis_of(rec) -> dict | None:
 
 @main_bp.route("/meetings/analyze", methods=["POST"])
 @login_required
+@limited("analyze")
 def analyze_meeting():
     """
     On-demand AI review of how CloudFuze employees handled a client meeting (JSON
@@ -1180,6 +1220,7 @@ def _with_uploads(record, transcript_text: str, transcript_lines: list, recordin
 
 @main_bp.route("/transcript/parse-file", methods=["POST"])
 @login_required
+@limited("parse_file")
 def parse_transcript_file():
     """Extract plain text from an uploaded .txt, .vtt, or .docx transcript file."""
     if "file" not in request.files:
@@ -1220,6 +1261,7 @@ def parse_transcript_file():
 
 @main_bp.route("/mom-builder", methods=["POST"])
 @login_required
+@limited("mom_builder")
 def mom_builder():
     meeting_subject = request.form.get("meeting_subject", "")
     meeting_date = request.form.get("meeting_date", "")
@@ -1401,6 +1443,7 @@ def _send_form_again(mom_data: dict, to_email: str, cc_emails: str, greeting_nam
 
 @main_bp.route("/send-email", methods=["POST"])
 @login_required
+@limited("send_email")
 def send_email():
     mom_data = session.get("mom_doc")
     doc_bytes = _mom_doc_bytes(mom_data)

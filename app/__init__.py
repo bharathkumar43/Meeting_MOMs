@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from flask import Flask
 from flask_compress import Compress
 from flask_session import Session
@@ -19,7 +20,18 @@ migrate = Migrate()
 compress = Compress()
 
 
+def _weak_secret_key(key: str) -> bool:
+    key = key or ""
+    return len(key) < 32 or bool(re.search(r"change|your-|here|example|secret-key", key, re.I))
+
+
 def create_app():
+    # A real (https) deployment must not run with the default, a placeholder or a short key
+    if Config.REDIRECT_URI.lower().startswith("https://") and _weak_secret_key(Config.SECRET_KEY):
+        raise RuntimeError(
+            "FLASK_SECRET_KEY is missing or weak. Set a long random value, e.g. "
+            "python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
     app = Flask(__name__)
     app.config.from_object(Config)
     app.secret_key = Config.SECRET_KEY

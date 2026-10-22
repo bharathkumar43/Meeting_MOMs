@@ -8,6 +8,7 @@ served only through an authorized route. Transcript text is stored in the databa
 """
 import logging
 import os
+import shutil
 import uuid
 
 from app import db
@@ -38,6 +39,10 @@ def _looks_like_video(head: bytes, ext: str) -> bool:
     return len(head) >= 12 and head[4:8] == b"ftyp"
 
 
+def _free_bytes(path: str) -> int:
+    return shutil.disk_usage(path).free
+
+
 def _upload_dir() -> str:
     path = os.path.join(Config.UPLOAD_DIR, "videos")
     os.makedirs(path, exist_ok=True)
@@ -60,8 +65,20 @@ def save_video(record: MeetingRecord, file_storage, uploaded_by: str) -> Meeting
     if not _looks_like_video(head, ext):
         raise UploadError("This file doesn't look like a valid video.")
 
+    # Per-user storage quota (the video this upload replaces doesn't count) and disk headroom
+    used = (db.session.query(db.func.coalesce(db.func.sum(MeetingUpload.size_bytes), 0))
+            .filter(MeetingUpload.kind == "video", MeetingUpload.uploaded_by == uploaded_by,
+                    MeetingUpload.meeting_record_id != record.id)
+            .scalar())
+    allowance = Config.VIDEO_USER_QUOTA_BYTES - int(used or 0)
+    folder = _upload_dir()
+    if allowance <= 0:
+        raise UploadError("You have reached your video storage limit. Remove older videos first.")
+    if _free_bytes(folder) <= Config.UPLOAD_MIN_FREE_BYTES:
+        raise UploadError("Video storage is full right now. Please contact an administrator.")
+
     stored_name = f"{record.id}-{uuid.uuid4().hex}{ext}"
-    dest = os.path.join(_upload_dir(), stored_name)
+    dest = os.path.join(folder, stored_name)
     size = 0
     try:
         with open(dest, "wb") as out:
@@ -76,6 +93,10 @@ def save_video(record: MeetingRecord, file_storage, uploaded_by: str) -> Meeting
                     raise UploadError(
                         f"Video is too large (max {Config.VIDEO_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)."
                     )
+                if size > allowance:
+                    raise UploadError("This video would exceed your video storage limit.")
+                if _free_bytes(folder) - len(chunk) <= Config.UPLOAD_MIN_FREE_BYTES:
+                    raise UploadError("Video storage is full right now. Please contact an administrator.")
                 out.write(chunk)
     except Exception:
         if os.path.exists(dest):

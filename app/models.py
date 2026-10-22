@@ -196,3 +196,18 @@ class UserRole(db.Model):
 
     def __repr__(self):
         return f"<UserRole {self.email}: {self.role} -> {self.manager_email}>"
+
+
+class RateLimitCounter(db.Model):
+    """
+    Requests per (limit name + user/IP, fixed time window). Kept in the database so every
+    gunicorn worker shares the same counts; rows older than a day are pruned.
+    """
+    __tablename__ = "rate_limit_counters"
+
+    key = db.Column(db.String(320), primary_key=True)
+    window_start = db.Column(db.BigInteger, primary_key=True)
+    count = db.Column(db.Integer, nullable=False, default=0)
+
+    def __repr__(self):
+        return f"<RateLimitCounter {self.key} @{self.window_start}: {self.count}>"

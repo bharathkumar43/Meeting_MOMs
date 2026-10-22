@@ -56,8 +56,29 @@ class Config:
         "UPLOAD_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
     )
     VIDEO_UPLOAD_MAX_BYTES = int(os.getenv("VIDEO_UPLOAD_MAX_MB", "1024")) * 1024 * 1024
-    # Largest request Flask accepts (video limit + headroom for the form)
+    # Largest request Flask accepts (video limit + headroom for the form). Only the video
+    # upload route gets this much; every other route is held to REQUEST_MAX_BYTES.
     MAX_CONTENT_LENGTH = VIDEO_UPLOAD_MAX_BYTES + 10 * 1024 * 1024
+    REQUEST_MAX_BYTES = int(os.getenv("REQUEST_MAX_MB", "25")) * 1024 * 1024
+    MAX_FORM_MEMORY_SIZE = 500 * 1024  # per non-file form field (Flask's default, made explicit)
+    # Total uploaded video per user, and free disk space always left on the upload volume
+    VIDEO_USER_QUOTA_BYTES = int(os.getenv("VIDEO_USER_QUOTA_MB", "20480")) * 1024 * 1024
+    UPLOAD_MIN_FREE_BYTES = int(os.getenv("UPLOAD_MIN_FREE_MB", "2048")) * 1024 * 1024
+    # A .docx is a zip: refuse ones that expand past this before parsing them
+    DOCX_MAX_EXPANDED_BYTES = int(os.getenv("DOCX_MAX_EXPANDED_MB", "50")) * 1024 * 1024
+    # Longest transcript sent to OpenAI for a MOM (~75k tokens; a 3-hour meeting is ~150k chars)
+    MOM_TRANSCRIPT_MAX_CHARS = int(os.getenv("MOM_TRANSCRIPT_MAX_CHARS", "300000"))
+
+    # Per-user (per-IP for sign-in) request limits: name -> (requests, window in seconds).
+    # Override with e.g. RATE_LIMIT_MOM_BUILDER=40/3600
+    RATE_LIMITS = {
+        name: tuple(int(x) for x in os.getenv(f"RATE_LIMIT_{name.upper()}", default).split("/"))
+        for name, default in {
+            "login": "30/600", "mom_builder": "20/3600", "analyze": "60/3600",
+            "send_email": "30/3600", "upload_video": "20/3600", "upload_transcript": "60/3600",
+            "parse_file": "60/3600",
+        }.items()
+    }
 
     # Time zone used for every time shown in the app and in MOM documents (default IST)
     DISPLAY_TZ_NAME = os.getenv("DISPLAY_TZ_NAME", "IST")
