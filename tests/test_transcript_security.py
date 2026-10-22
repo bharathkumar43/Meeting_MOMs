@@ -117,3 +117,9 @@ def test_empty_or_dot_event_ids_are_not_found(client, signed_in, monkeypatch, ev
 def test_zoom_dot_segment_ids_stay_one_segment(monkeypatch):
     from app.zoom_client import _path_id
     assert _path_id("..") == "%2E%2E" and _path_id(".") == "%2E"
+
+
+def test_malformed_back_value_does_not_crash(client, signed_in, event):
+    signed_in(client, OWNER)
+    resp = client.get("/transcript", query_string={"event_id": "evt-1", "back": "http://["})
+    assert resp.status_code == 200

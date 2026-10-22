@@ -733,7 +733,8 @@ def check_media(app_client, records: list[MeetingRecord], owner_email: str,
         if not result["recording"]:
             organizer = ((meeting.get("organizer") or {}).get("emailAddress") or {}).get("address", "")
             organizer_uid = app_client._resolve_user_id_safe(organizer) if (
-                organizer and organizer.lower().endswith(f"@{Config.ORG_DOMAIN.lower()}")) else None
+                files and organizer and organizer.lower().endswith(f"@{Config.ORG_DOMAIN.lower()}")
+            ) else None
             found = find_recording(meeting, files, owner_user_id, organizer_uid or "")
             if found and found.get("item_id"):
                 result["recording"] = {

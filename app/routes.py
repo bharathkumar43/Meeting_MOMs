@@ -839,7 +839,10 @@ def _safe_back(value: str | None) -> str | None:
     value = (value or "").strip()
     if "\\" in value:
         return None
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:  # e.g. "http://[" (malformed IPv6 host)
+        return None
     if parts.scheme or parts.netloc:
         if parts.scheme not in ("http", "https") or parts.netloc != request.host:
             return None
@@ -2009,7 +2012,9 @@ def zoom_transcript():
     me = _current_user_email()
     host = (recording.get("host_email") or "").strip().lower()
     attended = any((p.get("user_email") or "").strip().lower() == me for p in participants)
-    allowed = me == host or attended or roles.is_admin(me) or roles.can_view(me, host)
+    # Admins see org-hosted meetings via can_view; a recording Zoom returns without a host
+    # email can still be opened by an admin
+    allowed = me == host or attended or roles.can_view(me, host) or (not host and roles.is_admin(me))
     if not (me and allowed):
         # Same message as "no recording", so the page doesn't reveal which meetings exist
         flash("This Zoom meeting can't be opened.", "warning")

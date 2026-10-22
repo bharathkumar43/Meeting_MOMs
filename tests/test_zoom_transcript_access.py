@@ -83,3 +83,11 @@ def test_truncated_participant_list_is_unknown(monkeypatch):
 
     monkeypatch.setattr("app.zoom_client._HTTP.get", lambda url, **kw: _Resp())
     assert ZoomClient("t").get_past_meeting_participants("uuid-1") is None
+
+
+def test_admin_cannot_open_recordings_hosted_outside_the_org(client, signed_in, zoom, monkeypatch):
+    original = ZoomClient.get_meeting_recordings
+    monkeypatch.setattr(ZoomClient, "get_meeting_recordings",
+                        lambda self, mid: {**original(self, mid), "host_email": "x@partner.example"})
+    signed_in(client, "admin@cloudfuze.com")
+    assert client.get("/zoom/transcript?meeting_id=81234567890").status_code == 302
