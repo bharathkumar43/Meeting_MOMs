@@ -210,3 +210,13 @@ def test_load_older_stops_when_backfill_cannot_fetch(app, client, signed_in, mon
     assert resp.status_code == 200
     assert resp.get_json()["data"]["count"] == 0
     assert len(calls) == 1
+
+
+def test_send_page_tolerates_broken_attendees_field(app, client, signed_in):
+    with app.app_context():
+        _seed_people(1)
+    signed_in(client, "emp0@cloudfuze.com")
+    resp = client.post("/send", data={"meeting_subject": "S", "meeting_date": "2026-10-01",
+                                      "attendees_json": "{not json", "title": "S"})
+    assert resp.status_code == 200
+    assert "Dear <span id=\"greetingPreview\" class=\"fw-semibold\">Customer</span>" in resp.get_data(as_text=True)

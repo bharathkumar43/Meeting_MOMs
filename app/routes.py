@@ -837,7 +837,7 @@ def _recording_for_meeting(meeting, app_client) -> dict | None:
             entry = None
         if entry:
             recording_map[meeting["id"]] = entry
-            session["recording_map"] = recording_map
+            session["recording_map"] = dict(list(recording_map.items())[-_RECORDING_MAP_LIMIT:])
 
     return _playable_recording(entry, meeting["id"], app_client)
 
@@ -1250,7 +1250,10 @@ def send_page():
 
     include_transcript = request.form.get("include_transcript") == "on"
 
-    attendees = json.loads(attendees_json)
+    try:
+        attendees = [a for a in json.loads(attendees_json) if isinstance(a, dict)]
+    except (ValueError, TypeError):
+        attendees = []  # tampered/broken hidden field: just no prefilled recipients
 
     doc_bytes = generate_mom_document(
         meeting_title=title,
