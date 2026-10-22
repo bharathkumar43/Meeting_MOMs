@@ -1466,6 +1466,7 @@ def admin_dashboard():
 def _role_context(user_rows) -> dict:
     """Role, manager and dropdown data for the admin users table."""
     emails = [u["email"].lower() for u in user_rows]
+    roles.prefetch(emails)
     names = {u["email"].lower(): (u["name"] or u["email"]) for u in user_rows}
     user_roles = {e: roles.role_of(e) for e in emails}
     return {

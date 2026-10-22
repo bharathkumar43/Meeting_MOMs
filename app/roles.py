@@ -45,6 +45,19 @@ def _row(email: str) -> UserRole | None:
     return cache[email]
 
 
+def prefetch(emails: list[str]) -> None:
+    """Load the UserRole rows of many emails with one query into the per-request memo."""
+    if not _has_g():
+        return
+    cache = g.setdefault("_role_rows", {})
+    wanted = {_norm(e) for e in emails if _norm(e)} - set(cache)
+    if not wanted:
+        return
+    found = {r.email: r for r in UserRole.query.filter(UserRole.email.in_(wanted)).all()}
+    for email in wanted:
+        cache[email] = found.get(email)
+
+
 def _has_g() -> bool:
     try:
         g._probe = True
