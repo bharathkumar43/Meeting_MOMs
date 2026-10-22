@@ -108,11 +108,15 @@ def get_pending_moms(user_id: int | None = None):
     the most recent access time — no duplicates.
     Pass user_id to restrict the result to a single user.
     """
-    sent_subq = db.session.query(
+    sent_rows = db.session.query(
         MOMSent.user_id,
         MOMSent.subject,
         MOMSent.meeting_date,
-    ).distinct().subquery()
+    )
+    if user_id is not None:
+        # Only this user's sent rows can match their accesses (the join is on user_id)
+        sent_rows = sent_rows.filter(MOMSent.user_id == user_id)
+    sent_subq = sent_rows.distinct().subquery()
 
     latest_access = func.max(MeetingAccess.accessed_at).label("accessed_at")
 
