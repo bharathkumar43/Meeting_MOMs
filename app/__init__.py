@@ -30,9 +30,7 @@ def create_app():
     )
     app.config["SESSION_PERMANENT"] = True
     app.config["SESSION_USE_SIGNER"] = True
-    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-    app.config["SESSION_COOKIE_SECURE"] = False
-    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    # SESSION_COOKIE_SAMESITE / _SECURE / _HTTPONLY come from Config (env-driven)
 
     Session(app)
     db.init_app(app)
@@ -63,6 +61,17 @@ def create_app():
         db.create_all()
 
     from app.meeting_sync import start_background_sync
+
+    @app.after_request
+    def _security_headers(response):
+        # Frame/MIME/referrer hardening; no script-src rule, so existing inline scripts still run
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault(
+            "Content-Security-Policy", "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+        )
+        return response
 
     @app.before_request
     def _start_meeting_sync():

@@ -4,6 +4,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _secure_cookie_default(redirect_uri: str) -> bool:
+    """HTTPS deployments (an https:// redirect URI) get Secure cookies unless overridden."""
+    return redirect_uri.lower().startswith("https://")
+
+
 class Config:
     AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
     AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
@@ -26,8 +31,12 @@ class Config:
 
     SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-secret-key-change-in-production")
 
+    secure_cookie_default = staticmethod(_secure_cookie_default)
+
     SESSION_COOKIE_SAMESITE = "Lax"
-    SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
+    SESSION_COOKIE_SECURE = os.getenv(
+        "SESSION_COOKIE_SECURE", str(_secure_cookie_default(REDIRECT_URI))
+    ).lower() == "true"
     SESSION_COOKIE_HTTPONLY = True
 
     ORG_DOMAIN = os.getenv("ORG_DOMAIN", "cloudfuze.com")
