@@ -524,6 +524,13 @@ def _upsert_window(owner_email: str, meetings: list[dict], start: datetime, end:
     added = updated = 0
     seen = set()
     now = datetime.utcnow()
+    # Meetings stored outside this window (start moved): one query instead of one per meeting
+    missing = {m["id"] for m in meetings if m.get("id") and m["id"] not in existing}
+    elsewhere = {
+        r.event_id: r for r in MeetingRecord.query.filter(
+            MeetingRecord.owner_email == owner_email, MeetingRecord.event_id.in_(missing)
+        )
+    } if missing else {}
     for m in meetings:
         start_utc = _parse_graph_dt(m.get("start", {}).get("dateTime", ""))
         if not start_utc or not m.get("id"):
@@ -540,10 +547,12 @@ def _upsert_window(owner_email: str, meetings: list[dict], start: datetime, end:
             "external_attendees_json": json.dumps(m.get("external_attendees", [])),
         }
 
-        rec = existing.get(m["id"]) or get_record(owner_email, m["id"])
+        rec = existing.get(m["id"]) or elsewhere.get(m["id"])
         if rec is None:
-            db.session.add(MeetingRecord(owner_email=owner_email, event_id=m["id"],
-                                         first_seen_at=now, updated_at=now, **values))
+            rec = MeetingRecord(owner_email=owner_email, event_id=m["id"],
+                                first_seen_at=now, updated_at=now, **values)
+            db.session.add(rec)
+            elsewhere[m["id"]] = rec  # a repeated event ID updates this row, as before
             added += 1
             continue
         changed = {k: v for k, v in values.items() if getattr(rec, k) != v}
