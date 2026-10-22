@@ -1,7 +1,7 @@
 import threading
 
 import msal
-from flask import g, session, redirect, url_for, request
+from flask import current_app, g, session, redirect, url_for, request
 from config import Config
 
 # MSAL authority/discovery metadata, shared across requests. Without it every
@@ -36,36 +36,42 @@ def _save_cache(cache):
         session["token_cache"] = cache.serialize()
 
 
-def get_auth_url():
-    """Generate the Azure AD authorization URL."""
+def get_auth_url() -> str:
+    """Start an auth-code flow (state + PKCE + nonce) bound to this browser session."""
     app = _build_msal_app()
-    auth_url = app.get_authorization_request_url(
+    flow = app.initiate_auth_code_flow(
         scopes=Config.SCOPES,
         redirect_uri=Config.REDIRECT_URI,
     )
-    return auth_url
+    session["auth_flow"] = flow
+    return flow["auth_uri"]
 
 
-def process_auth_callback():
-    """Exchange the authorization code for tokens."""
-    cache = _load_cache()
-    app = _build_msal_app(cache=cache)
-
-    code = request.args.get("code")
-    if not code:
+def process_auth_callback() -> dict | None:
+    """Redeem the code only for the flow this session started, then start a fresh session."""
+    flow = session.pop("auth_flow", None)
+    if not flow or not request.args.get("code"):
         return None
 
-    result = app.acquire_token_by_authorization_code(
-        code,
-        scopes=Config.SCOPES,
-        redirect_uri=Config.REDIRECT_URI,
-    )
+    cache = msal.SerializableTokenCache()  # never merge into a previous user's cache
+    app = _build_msal_app(cache=cache)
+    try:
+        result = app.acquire_token_by_auth_code_flow(flow, request.args.to_dict())
+    except ValueError:  # state mismatch or malformed response
+        return None
+    if "access_token" not in result:
+        return None
 
-    if "access_token" in result:
-        session["user"] = result.get("id_token_claims")
-        _save_cache(cache)
-        return result
-    return None
+    accounts = app.get_accounts()
+    session.clear()
+    session["user"] = result.get("id_token_claims")
+    session["home_account_id"] = accounts[0]["home_account_id"] if accounts else None
+    session["token_cache"] = cache.serialize()
+    # New session id after login, so a pre-login session id can't be reused
+    regenerate = getattr(current_app.session_interface, "regenerate", None)
+    if regenerate:
+        regenerate(session)
+    return result
 
 
 def get_token():
@@ -80,7 +86,9 @@ def _get_token_uncached():
     cache = _load_cache()
     app = _build_msal_app(cache=cache)
 
-    accounts = app.get_accounts()
+    # Use only the account that signed in to this session, never just the first cached one
+    wanted = session.get("home_account_id")
+    accounts = [a for a in app.get_accounts() if wanted and a.get("home_account_id") == wanted]
     if not accounts:
         return None
 
