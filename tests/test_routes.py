@@ -160,16 +160,32 @@ def test_send_email_records_each_recipient(app, client, signed_in, monkeypatch):
             "a@client.com", "b@client.com"}
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-01: redirects to the POST-only /send page (405)")
 def test_send_email_without_recipient_shows_warning(app, client, signed_in):
     with app.app_context():
         _seed_people(1)
     signed_in(client, "emp0@cloudfuze.com")
     _build_mom(client)
-    resp = client.post("/send-email", data={"to_email": "  ", "format_choice": "docx"},
-                       follow_redirects=True)
+    resp = client.post("/send-email", data={"to_email": "  ", "cc_emails": "x@client.com",
+                                            "greeting_name": "Jane", "format_choice": "docx"})
+    html = resp.get_data(as_text=True)
     assert resp.status_code == 200
-    assert "Please provide at least one customer email address." in resp.get_data(as_text=True)
+    assert "Please provide at least one customer email address." in html
+    assert 'value="x@client.com"' in html and "<strong>Action Items:</strong> 1" in html
+
+
+def test_send_email_rejects_oversized_extra_attachment(app, client, signed_in, monkeypatch):
+    from app import routes
+    monkeypatch.setattr(routes, "_EXTRA_ATTACHMENT_MAX_BYTES", 10)
+    monkeypatch.setattr(routes, "send_mom_email", lambda **k: pytest.fail("must not send"))
+    with app.app_context():
+        _seed_people(1)
+    signed_in(client, "emp0@cloudfuze.com")
+    _build_mom(client)
+    resp = client.post("/send-email", data={
+        "to_email": "a@client.com", "format_choice": "pdf",
+        "extra_attachment": (io.BytesIO(b"x" * 11), "big.pdf")}, content_type="multipart/form-data")
+    assert resp.status_code == 200
+    assert "exceeds the 20 MB size limit" in resp.get_data(as_text=True)
 
 
 def test_download_without_document_redirects(app, client, signed_in):

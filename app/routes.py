@@ -1294,6 +1294,8 @@ def send_page():
         "meeting_date": meeting_date,
         "meeting_time": meeting_time,
         "attendees": attendees,
+        "action_count": len(action_items),
+        "decision_count": len(decisions),
     }
 
     return render_template(
@@ -1338,6 +1340,26 @@ def download_mom():
 
 # ── Send Email ───────────────────────────────────────────────
 
+_EXTRA_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
+def _send_form_again(mom_data: dict, to_email: str, cc_emails: str, greeting_name: str) -> str:
+    """Re-show the Send page with what the user typed (after a validation problem)."""
+    return render_template(
+        "send.html",
+        meeting_subject=mom_data["meeting_subject"],
+        meeting_date=mom_data["meeting_date"],
+        meeting_time=mom_data["meeting_time"],
+        action_count=mom_data.get("action_count", 0),
+        decision_count=mom_data.get("decision_count", 0),
+        sent_success=False,
+        prefill_email=to_email,
+        prefill_cc=cc_emails,
+        has_default_cc=bool(Config.MOM_DEFAULT_DL_EMAIL or Config.MOM_DEFAULT_CC_EMAIL),
+        greeting_name=greeting_name,
+    )
+
+
 @main_bp.route("/send-email", methods=["POST"])
 @login_required
 def send_email():
@@ -1356,7 +1378,16 @@ def send_email():
 
     if not to_list:
         flash("Please provide at least one customer email address.", "warning")
-        return redirect(url_for("main.send_page"))
+        return _send_form_again(mom_data, to_email, cc_emails, greeting_name)
+
+    # Check the optional extra file before any conversion work; never read more than the limit
+    extra_file = request.files.get("extra_attachment")
+    extra_bytes = None
+    if extra_file and extra_file.filename:
+        extra_bytes = extra_file.read(_EXTRA_ATTACHMENT_MAX_BYTES + 1)
+        if len(extra_bytes) > _EXTRA_ATTACHMENT_MAX_BYTES:
+            flash("Extra attachment exceeds the 20 MB size limit.", "warning")
+            return _send_form_again(mom_data, to_email, cc_emails, greeting_name)
 
     try:
         token = get_token()
@@ -1385,13 +1416,7 @@ def send_email():
             })
 
         # Append any extra file the user uploaded
-        extra_file = request.files.get("extra_attachment")
-        if extra_file and extra_file.filename:
-            extra_bytes = extra_file.read()
-            max_bytes = 20 * 1024 * 1024  # 20 MB
-            if len(extra_bytes) > max_bytes:
-                flash("Extra attachment exceeds the 20 MB size limit.", "warning")
-                return redirect(url_for("main.send_page"))
+        if extra_bytes is not None:
             safe_extra_name = secure_filename(extra_file.filename)
             attachments.append({
                 "bytes": extra_bytes,
