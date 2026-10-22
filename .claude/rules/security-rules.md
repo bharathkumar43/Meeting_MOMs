@@ -14,7 +14,7 @@ These are the standing rules `.claude/agents/security-reviewer.md` enforces and 
 - Session cookies: `SESSION_COOKIE_HTTPONLY = True` always; `SESSION_COOKIE_SECURE` must be `true` in any non-localhost deployment.
 
 ## Route Protection
-- Every route except `/`, `/login`, `/login-page`, `/auth/callback`, and `/favicon.ico` must use `@login_required`.
+- Every route except `/`, `/login`, `/login-page`, `/auth/callback`, `/favicon.ico` and `/healthz` must use `@login_required`. `/healthz` returns only `{"status": "ok"}` (or 503) and must never expose details.
 - Admin-only routes (`/admin`, `/admin/*`) must additionally check `current_email.lower() in config.ADMIN_EMAILS`.
 - Never trust a `next`/redirect parameter without validating it points inside the app (open redirect risk).
 
